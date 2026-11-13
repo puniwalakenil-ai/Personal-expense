@@ -1,0 +1,78 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: Default-deny all unlisted documents and collections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAuthorizedOwner(userId) {
+      return isSignedIn()
+        && request.auth.uid == userId
+        && request.auth.token.email == "puniwalakenil@gmail.com"
+        && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Single-user isolated root: Only puniwalakenil@gmail.com can read or mutate their own records
+    match /users/{userId} {
+      allow get: if isAuthorizedOwner(userId);
+      allow create, update, delete: if isAuthorizedOwner(userId);
+
+      // Bank Accounts
+      match /bankAccounts/{bankId} {
+        allow get, list: if isAuthorizedOwner(userId);
+        allow create, update, delete: if isAuthorizedOwner(userId) && isValidId(bankId);
+      }
+
+      // Financial Transactions (Passbook entries, Expenses, Income, Transfers)
+      match /transactions/{txId} {
+        allow get, list: if isAuthorizedOwner(userId);
+        allow create, update, delete: if isAuthorizedOwner(userId) && isValidId(txId);
+      }
+
+      // Categories
+      match /categories/{catId} {
+        allow get, list: if isAuthorizedOwner(userId);
+        allow create, update, delete: if isAuthorizedOwner(userId) && isValidId(catId);
+      }
+
+      // Credit Cards
+      match /creditCards/{cardId} {
+        allow get, list: if isAuthorizedOwner(userId);
+        allow create, update, delete: if isAuthorizedOwner(userId) && isValidId(cardId);
+      }
+
+      // Loans & Advances
+      match /loans/{loanId} {
+        allow get, list: if isAuthorizedOwner(userId);
+        allow create, update, delete: if isAuthorizedOwner(userId) && isValidId(loanId);
+      }
+
+      // UPI Accounts
+      match /upiAccounts/{upiId} {
+        allow get, list: if isAuthorizedOwner(userId);
+        allow create, update, delete: if isAuthorizedOwner(userId) && isValidId(upiId);
+      }
+
+      // Saved Item Names for auto-category linkage
+      match /savedItemNames/{itemId} {
+        allow get, list: if isAuthorizedOwner(userId);
+        allow create, update, delete: if isAuthorizedOwner(userId) && isValidId(itemId);
+      }
+
+      // User Settings and Metadata
+      match /meta/{metaDoc} {
+        allow get, list: if isAuthorizedOwner(userId);
+        allow create, update, delete: if isAuthorizedOwner(userId) && isValidId(metaDoc);
+      }
+    }
+  }
+}

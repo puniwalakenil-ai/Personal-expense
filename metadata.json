@@ -1,0 +1,6 @@
+{
+  "name": "Tech Expenses",
+  "description": "A modern, premium personal finance and money-management web application for tracking personal expenses, bank accounts, cash, UPI, credit cards, loans, and cash flow.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

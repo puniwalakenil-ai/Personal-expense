@@ -1,0 +1,184 @@
+{
+  "entities": {
+    "BankAccount": {
+      "title": "BankAccount",
+      "description": "Personal bank account with account number and balances",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "bankName": { "type": "string", "maxLength": 100 },
+        "accountNumber": { "type": "string", "maxLength": 50 },
+        "accountType": { "type": "string", "enum": ["Savings", "Current", "Salary", "Fixed Deposit"] },
+        "openingBalance": { "type": "number" },
+        "currentBalance": { "type": "number" },
+        "ifscCode": { "type": "string", "maxLength": 20 },
+        "upiId": { "type": "string", "maxLength": 100 },
+        "isDeleted": { "type": "boolean" },
+        "deletedAt": { "type": "string", "maxLength": 50 },
+        "createdAt": { "type": "string", "maxLength": 50 },
+        "updatedAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["id", "bankName", "accountNumber", "accountType", "openingBalance"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "A single financial transaction entry in passbook or ledger",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "date": { "type": "string", "maxLength": 20 },
+        "type": {
+          "type": "string",
+          "enum": ["Expense", "Money Received", "Money Paid", "Credit Card Payment", "Loan Given", "Loan Taken", "Loan Repayment"]
+        },
+        "title": { "type": "string", "maxLength": 150 },
+        "narration": { "type": "string", "maxLength": 200 },
+        "categoryId": { "type": "string", "maxLength": 128 },
+        "categoryName": { "type": "string", "maxLength": 100 },
+        "amount": { "type": "number" },
+        "paymentMethod": { "type": "string", "enum": ["Cash", "UPI", "Bank Account", "Credit Card"] },
+        "bankAccountId": { "type": "string", "maxLength": 128 },
+        "bankAccountName": { "type": "string", "maxLength": 100 },
+        "creditCardId": { "type": "string", "maxLength": 128 },
+        "creditCardName": { "type": "string", "maxLength": 100 },
+        "upiId": { "type": "string", "maxLength": 100 },
+        "loanId": { "type": "string", "maxLength": 128 },
+        "personName": { "type": "string", "maxLength": 100 },
+        "notes": { "type": "string", "maxLength": 500 },
+        "isDeleted": { "type": "boolean" },
+        "deletedAt": { "type": "string", "maxLength": 50 },
+        "createdAt": { "type": "string", "maxLength": 50 },
+        "updatedAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["id", "date", "type", "title", "amount", "paymentMethod"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Financial category for spending, income, capital, loan, or advance",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 80 },
+        "type": { "type": "string", "enum": ["Expense", "Income", "Capital", "Loan", "Advance", "Investment", "Both", "Other"] },
+        "color": { "type": "string", "maxLength": 30 },
+        "icon": { "type": "string", "maxLength": 30 },
+        "createdAt": { "type": "string", "maxLength": 50 },
+        "updatedAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["id", "name", "type"]
+    },
+    "CreditCard": {
+      "title": "CreditCard",
+      "description": "User credit card with limit and billing cycle",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "cardName": { "type": "string", "maxLength": 100 },
+        "cardIdentifier": { "type": "string", "maxLength": 30 },
+        "creditLimit": { "type": "number" },
+        "billingDate": { "type": "number" },
+        "dueDays": { "type": "number" },
+        "billingStatementDate": { "type": "string", "maxLength": 50 },
+        "paymentDueDate": { "type": "string", "maxLength": 50 },
+        "outstandingAmount": { "type": "number" },
+        "createdAt": { "type": "string", "maxLength": 50 },
+        "updatedAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["id", "cardName", "cardIdentifier", "creditLimit", "billingDate", "paymentDueDate"]
+    },
+    "LoanEntry": {
+      "title": "LoanEntry",
+      "description": "Loan given, loan taken, or advance",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "personName": { "type": "string", "maxLength": 100 },
+        "loanType": { "type": "string", "enum": ["Money Given", "Money Taken", "Secured Loan", "Unsecured Loan", "Loan & Advance"] },
+        "originalAmount": { "type": "number" },
+        "settledAmount": { "type": "number" },
+        "date": { "type": "string", "maxLength": 20 },
+        "dueDate": { "type": "string", "maxLength": 20 },
+        "notes": { "type": "string", "maxLength": 500 },
+        "status": { "type": "string", "enum": ["Pending", "Partially Settled", "Settled"] },
+        "paymentMethod": { "type": "string", "enum": ["Cash", "UPI", "Bank Account", "Credit Card"] },
+        "bankAccountId": { "type": "string", "maxLength": 128 },
+        "repayments": { "type": "array" },
+        "createdAt": { "type": "string", "maxLength": 50 },
+        "updatedAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["id", "personName", "loanType", "originalAmount", "date", "status"]
+    },
+    "UpiAccount": {
+      "title": "UpiAccount",
+      "description": "User's linked UPI ID",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "upiId": { "type": "string", "maxLength": 100 },
+        "label": { "type": "string", "maxLength": 100 },
+        "bankAccountId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 50 },
+        "updatedAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["id", "upiId", "label"]
+    },
+    "ExpenseItemName": {
+      "title": "ExpenseItemName",
+      "description": "Saved expense item name mapped to a default category",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "categoryId": { "type": "string", "maxLength": 128 },
+        "categoryName": { "type": "string", "maxLength": 100 },
+        "createdAt": { "type": "string", "maxLength": 50 },
+        "updatedAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["id", "name", "categoryId"]
+    },
+    "UserMeta": {
+      "title": "UserMeta",
+      "description": "User preferences and global cash balance",
+      "type": "object",
+      "properties": {
+        "cashOpeningBalance": { "type": "number" },
+        "savedExpenseDetails": { "type": "array" },
+        "updatedAt": { "type": "string", "maxLength": 50 }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}/bankAccounts/{bankId}": {
+      "schema": "BankAccount",
+      "description": "User bank accounts and balances"
+    },
+    "/users/{userId}/transactions/{transactionId}": {
+      "schema": "Transaction",
+      "description": "Financial ledger transactions"
+    },
+    "/users/{userId}/categories/{categoryId}": {
+      "schema": "Category",
+      "description": "User personal expense and income categories"
+    },
+    "/users/{userId}/creditCards/{cardId}": {
+      "schema": "CreditCard",
+      "description": "User credit cards"
+    },
+    "/users/{userId}/loans/{loanId}": {
+      "schema": "LoanEntry",
+      "description": "Personal loans and advances"
+    },
+    "/users/{userId}/upiAccounts/{upiId}": {
+      "schema": "UpiAccount",
+      "description": "Linked UPI accounts"
+    },
+    "/users/{userId}/savedItemNames/{itemId}": {
+      "schema": "ExpenseItemName",
+      "description": "Auto-assigned expense item names"
+    },
+    "/users/{userId}/meta/settings": {
+      "schema": "UserMeta",
+      "description": "Global user balance and preferences"
+    }
+  }
+}
