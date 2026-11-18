@@ -96,7 +96,7 @@ export const CategoriesView: React.FC = () => {
             {uniqueCategories.length} Financial Categories
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Organized across Income, Expense, Capital, Loan, Advance, and Investments.
+            Organized across Income, Expense, Capital, Loan & Advance, Unsecured Loan, and Investments.
           </p>
         </div>
 
@@ -125,20 +125,30 @@ export const CategoriesView: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl text-xs overflow-x-auto scrollbar-none">
-            {filterTabs.map((t) => (
-              <button
-                key={t}
-                type="button"
-                onClick={() => setFilterType(t)}
-                className={`px-3 py-1.5 rounded-lg font-medium whitespace-nowrap transition-colors cursor-pointer ${
-                  filterType === t
-                    ? 'bg-white text-slate-900 shadow-xs font-semibold'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                {t === 'ALL' ? 'All Types' : t}
-              </button>
-            ))}
+            {filterTabs.map((t) => {
+              const label =
+                t === 'ALL'
+                  ? 'All Types'
+                  : t === 'Loan'
+                  ? 'Loan & Advance'
+                  : t === 'Advance'
+                  ? 'Unsecured Loan'
+                  : t;
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setFilterType(t)}
+                  className={`px-3 py-1.5 rounded-lg font-medium whitespace-nowrap transition-colors cursor-pointer ${
+                    filterType === t
+                      ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {label}
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -195,7 +205,11 @@ export const CategoriesView: React.FC = () => {
                         cat.type
                       )}`}
                     >
-                      {cat.type}
+                      {cat.type === 'Loan'
+                        ? 'Loan & Advance'
+                        : cat.type === 'Advance'
+                        ? 'Unsecured Loan'
+                        : cat.type}
                     </span>
                   </div>
 

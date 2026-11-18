@@ -13,7 +13,7 @@ export type NavSection =
   | 'Recycle Bin'
   | 'Settings';
 
-export type PaymentMethod = 'Cash' | 'UPI' | 'Bank Account' | 'Credit Card';
+export type PaymentMethod = 'Cash' | 'UPI' | 'Bank Account' | 'Credit Card' | 'Adjustment';
 
 export type TransactionType =
   | 'Expense'
@@ -22,7 +22,9 @@ export type TransactionType =
   | 'Credit Card Payment'
   | 'Loan Given'
   | 'Loan Taken'
-  | 'Loan Repayment';
+  | 'Loan Repayment'
+  | 'ATM Withdrawal'
+  | 'Adjustment';
 
 export type CategoryType =
   | 'Expense'
@@ -96,6 +98,8 @@ export type LoanType =
   | 'Unsecured Loan'
   | 'Loan & Advance';
 
+export type LoanDirection = 'Receivable' | 'Payable';
+
 export type LoanStatus = 'Pending' | 'Partially Settled' | 'Settled';
 
 export interface LoanRepaymentRecord {
@@ -104,6 +108,9 @@ export interface LoanRepaymentRecord {
   amount: number;
   paymentMethod: PaymentMethod;
   bankAccountId?: string;
+  bankAccountName?: string;
+  linkedTransactionId?: string;
+  repaymentType?: 'Paid' | 'Received';
   notes?: string;
 }
 
@@ -111,6 +118,11 @@ export interface LoanEntry {
   id: string;
   personName: string;
   loanType: LoanType;
+  direction?: LoanDirection;
+  entryKind?: 'Money Given' | 'Money Owed' | 'Adjustment';
+  reason?: string;
+  categoryId?: string;
+  categoryName?: string;
   originalAmount: number;
   settledAmount: number;
   date: string; // YYYY-MM-DD
@@ -119,6 +131,7 @@ export interface LoanEntry {
   status: LoanStatus;
   paymentMethod?: PaymentMethod;
   bankAccountId?: string;
+  linkedTransactionId?: string;
   repayments?: LoanRepaymentRecord[];
   createdAt: string;
 }
@@ -128,6 +141,38 @@ export interface UpiAccount {
   upiId: string; // e.g. user@okhdfcbank
   label: string; // e.g. Primary GPay
   bankAccountId?: string;
+  createdAt: string;
+}
+
+export type AttachmentSourceMethod = 'pdf' | 'camera' | 'gallery';
+export type AttachmentModuleType = 'bank' | 'cash' | 'credit-card';
+
+export interface TransactionAttachmentMeta {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  originalSize?: number;
+  sourceMethod: AttachmentSourceMethod;
+  contentHash: string;
+  moduleType: AttachmentModuleType;
+  accountScopeId?: string;
+  chunkCount: number;
+  thumbnailDataUrl?: string;
+  createdAt: string;
+}
+
+export interface PendingAttachmentDraft {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  originalSize?: number;
+  sourceMethod: AttachmentSourceMethod;
+  contentHash: string;
+  base64Data: string;
+  previewUrl: string;
+  thumbnailDataUrl?: string;
   createdAt: string;
 }
 
@@ -147,8 +192,17 @@ export interface Transaction {
   creditCardName?: string;
   upiId?: string;
   loanId?: string;
+  loanDirection?: LoanDirection;
   personName?: string;
   notes?: string;
+  attachments?: TransactionAttachmentMeta[];
+  linkedTransactionId?: string;
+  transferGroupId?: string;
+  isInternalTransfer?: boolean;
+  transferDirection?: 'in' | 'out';
+  relatedBankAccountId?: string;
+  relatedBankAccountName?: string;
+  isAdjustment?: boolean;
   isDeleted?: boolean;
   deletedAt?: string;
   createdAt: string;
@@ -193,7 +247,32 @@ export type PageView =
         categoryId: string;
         narration?: string;
         notes?: string;
+        pendingAttachments?: PendingAttachmentDraft[];
+        removedAttachmentIds?: string[];
       };
+      returnTo?: PageView;
+    }
+  | {
+      name: 'cash-entry-form';
+      editId?: string;
+      defaultDirection?: 'Cash In' | 'Cash Out';
+      restoredState?: {
+        date: string;
+        title: string;
+        amount: string;
+        direction: 'Cash In' | 'Cash Out';
+        cashOutType?: 'Expense' | 'Money Paid';
+        categoryId: string;
+        narration?: string;
+        notes?: string;
+        pendingAttachments?: PendingAttachmentDraft[];
+        removedAttachmentIds?: string[];
+      };
+      returnTo?: PageView;
+    }
+  | {
+      name: 'atm-withdrawal-form';
+      defaultBankId?: string;
       returnTo?: PageView;
     }
   | {
@@ -209,6 +288,8 @@ export type PageView =
         categoryId: string;
         narration?: string;
         notes?: string;
+        pendingAttachments?: PendingAttachmentDraft[];
+        removedAttachmentIds?: string[];
       };
       returnTo?: PageView;
     }
@@ -216,12 +297,14 @@ export type PageView =
       name: 'create-name-form';
       initialName: string;
       formStateToRestore?: {
-        formType: 'expense' | 'money-paid' | 'money-received' | 'bank-entry' | 'credit-card-entry';
+        formType: 'expense' | 'money-paid' | 'money-received' | 'bank-entry' | 'credit-card-entry' | 'cash-entry';
         bankId?: string;
         cardId?: string;
         date: string;
         amount: string;
         direction?: 'Money Out' | 'Money In';
+        cashDirection?: 'Cash In' | 'Cash Out';
+        cashOutType?: 'Expense' | 'Money Paid';
         paymentMethod: PaymentMethod;
         bankAccountId?: string;
         creditCardId?: string;
@@ -229,6 +312,8 @@ export type PageView =
         personName?: string;
         narration?: string;
         notes?: string;
+        pendingAttachments?: PendingAttachmentDraft[];
+        removedAttachmentIds?: string[];
         editId?: string;
       };
       returnTo?: PageView;
@@ -254,8 +339,21 @@ export type PageView =
   | { name: 'bank-account-form'; editId?: string; returnTo?: PageView }
   | { name: 'credit-card-form'; editId?: string; returnTo?: PageView }
   | { name: 'credit-card-payment-form'; cardId: string; returnTo?: PageView }
-  | { name: 'loan-form'; editId?: string; defaultType?: LoanType; returnTo?: PageView }
-  | { name: 'loan-repay-form'; loanId: string; returnTo?: PageView }
+  | {
+      name: 'loan-form';
+      editId?: string;
+      defaultType?: LoanType;
+      defaultDirection?: LoanDirection;
+      defaultPersonName?: string;
+      returnTo?: PageView;
+    }
+  | {
+      name: 'loan-repay-form';
+      loanId?: string;
+      personName?: string;
+      mode?: 'pay' | 'receive';
+      returnTo?: PageView;
+    }
   | { name: 'category-form'; editId?: string; defaultType?: CategoryType; returnTo?: PageView }
   | { name: 'upi-form'; editId?: string; returnTo?: PageView }
   | { name: 'entry-detail'; entryId: string; returnTo?: PageView }
@@ -263,6 +361,7 @@ export type PageView =
   | { name: 'bank-detail'; bankId: string; returnTo?: PageView }
   | { name: 'credit-card-detail'; cardId: string; returnTo?: PageView }
   | { name: 'loan-detail'; loanId: string; returnTo?: PageView }
+  | { name: 'person-loan-detail'; personName: string; returnTo?: PageView }
   | { name: 'notifications'; returnTo?: PageView };
 
 export interface DeleteModalState {

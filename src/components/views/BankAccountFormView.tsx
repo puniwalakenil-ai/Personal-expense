@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Landmark, ArrowLeft, Check, AlertCircle, ShieldCheck, RefreshCw, Trash2, AlertTriangle } from 'lucide-react';
+import React, { useState } from 'react';
+import { Landmark, Check, AlertCircle, RefreshCw, Trash2, AlertTriangle } from 'lucide-react';
 import { useFinancial } from '../../context/FinancialContext';
 import { BankAccountType, PageView } from '../../types';
 import { InlineDropdown } from '../common/InlineDropdown';
+import { TechExpensesLogo, TechExpensesVideoLoader } from '../common/TechExpensesLogo';
 
 interface Props {
   editId?: string;
@@ -33,46 +34,12 @@ export const BankAccountFormView: React.FC<Props> = ({ editId, returnTo }) => {
   const [progress, setProgress] = useState(0);
   const [stage, setStage] = useState<'saving' | 'complete' | 'error'>('saving');
   const [overlayError, setOverlayError] = useState('');
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
 
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, []);
-
-  const handleStartCreationAnimation = (savedBankName: string) => {
+  const handleStartCreationAnimation = (_savedBankName: string) => {
     setIsOverlayOpen(true);
     setProgress(0);
     setStage('saving');
     setOverlayError('');
-
-    // Smoothly progress from 0% to 100% over approx 5 seconds (5000ms)
-    // 50ms interval * 100 steps = 5000ms
-    const intervalTime = 50;
-    const increment = 1;
-
-    if (timerRef.current) clearInterval(timerRef.current);
-
-    timerRef.current = setInterval(() => {
-      setProgress((prev) => {
-        const next = prev + increment;
-        if (next >= 100) {
-          if (timerRef.current) clearInterval(timerRef.current);
-          setStage('complete');
-          // Automatically navigate after brief success confirmation
-          setTimeout(() => {
-            if (returnTo) {
-              navigateTo(returnTo);
-            } else {
-              navigateTo({ name: 'section', section: 'Bank Accounts' });
-            }
-          }, 1200);
-          return 100;
-        }
-        return next;
-      });
-    }, intervalTime);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -153,12 +120,11 @@ export const BankAccountFormView: React.FC<Props> = ({ editId, returnTo }) => {
             <div className="absolute -top-24 left-1/2 -translate-x-1/2 w-48 h-48 bg-indigo-500/20 rounded-full blur-3xl pointer-events-none" />
 
             {/* Brand Header */}
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-[11px] font-bold text-indigo-400 uppercase tracking-widest mb-4">
-              <ShieldCheck className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Tech Expenses</span>
+            <div className="inline-flex items-center justify-center px-3.5 py-1.5 rounded-2xl bg-white shadow-sm border border-slate-200/80 mb-4">
+              <TechExpensesLogo variant="wordmark" className="h-6 w-auto" />
             </div>
 
-            {/* Visual Icon / Animation */}
+            {/* Visual Icon / Complete MP4 Animation */}
             <div className="my-4 flex items-center justify-center">
               {stage === 'error' ? (
                 <div className="w-20 h-20 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 animate-in zoom-in-95">
@@ -169,12 +135,22 @@ export const BankAccountFormView: React.FC<Props> = ({ editId, returnTo }) => {
                   <Check className="w-10 h-10 stroke-[3]" />
                 </div>
               ) : (
-                <div className="relative w-20 h-20 flex items-center justify-center">
-                  <div className="absolute inset-0 rounded-2xl border-2 border-indigo-500/20 border-t-indigo-500 animate-spin" />
-                  <div className="w-14 h-14 rounded-xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center shadow-inner">
-                    <Landmark className="w-7 h-7 animate-pulse" />
-                  </div>
-                </div>
+                <TechExpensesVideoLoader
+                  mode="play-once"
+                  size="lg"
+                  onProgress={(pct) => setProgress(pct)}
+                  onEnded={() => {
+                    setProgress(100);
+                    setStage('complete');
+                    setTimeout(() => {
+                      if (returnTo) {
+                        navigateTo(returnTo);
+                      } else {
+                        navigateTo({ name: 'section', section: 'Bank Accounts' });
+                      }
+                    }, 1000);
+                  }}
+                />
               )}
             </div>
 

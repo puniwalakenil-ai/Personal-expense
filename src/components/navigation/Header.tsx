@@ -21,6 +21,7 @@ import { useFinancial } from '../../context/FinancialContext';
 import { useAuth } from '../../context/AuthContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
 import { getBillDueStatusText } from '../../utils/creditCardBilling';
+import { TechExpensesLogo } from '../common/TechExpensesLogo';
 
 export const Header: React.FC = () => {
   const {
@@ -87,10 +88,14 @@ export const Header: React.FC = () => {
         return pageView.editId ? 'Edit Credit Card' : 'Add Credit Card';
       case 'credit-card-payment-form':
         return 'Pay Credit Card Bill';
+      case 'cash-entry-form':
+        return pageView.editId ? 'Edit Cash Entry' : 'Record Cash Entry';
+      case 'atm-withdrawal-form':
+        return 'ATM Cash Withdrawal';
       case 'loan-form':
-        return pageView.editId ? 'Edit Loan Record' : 'Record Loan or Advance';
+        return pageView.editId ? 'Edit Loan / Advance' : 'Record Loan or Advance';
       case 'loan-repay-form':
-        return 'Record Loan Repayment';
+        return pageView.mode === 'receive' ? 'Record Money Received' : 'Record Repayment';
       case 'category-form':
         return pageView.editId ? 'Edit Category' : 'Create Category';
       case 'upi-form':
@@ -105,6 +110,8 @@ export const Header: React.FC = () => {
         return 'Credit Card Statement';
       case 'loan-detail':
         return 'Loan Statement';
+      case 'person-loan-detail':
+        return `${pageView.personName} Ledger`;
       default:
         return 'Tech Expenses';
     }
@@ -145,19 +152,28 @@ export const Header: React.FC = () => {
             </h1>
           </div>
         ) : (
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-base sm:text-xl font-extrabold text-slate-900 tracking-tight">
-                {activeSection}
-              </h1>
-              <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-purple-50 text-[10px] font-bold text-purple-700 uppercase tracking-wider border border-purple-100">
-                <ShieldCheck className="w-3 h-3 text-purple-600" />
-                Personal Vault
-              </span>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div
+              onClick={() => navigateTo({ name: 'section', section: 'Dashboard' })}
+              className="lg:hidden w-8 h-8 rounded-xl bg-white border border-slate-200/80 p-1 shadow-xs flex items-center justify-center shrink-0 cursor-pointer"
+              title="Tech Expenses"
+            >
+              <TechExpensesLogo variant="icon" className="w-full h-full" />
             </div>
-            <p className="text-[11px] text-slate-400 font-medium hidden sm:block mt-0.5">
-              Tech Expenses · Private Personal Finance
-            </p>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h1 className="text-base sm:text-xl font-extrabold text-slate-900 tracking-tight truncate">
+                  {activeSection}
+                </h1>
+                <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-purple-50 text-[10px] font-bold text-purple-700 uppercase tracking-wider border border-purple-100">
+                  <ShieldCheck className="w-3 h-3 text-purple-600" />
+                  Personal Vault
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400 font-medium hidden sm:block mt-0.5">
+                Tech Expenses · Private Personal Finance
+              </p>
+            </div>
           </div>
         )}
       </div>
@@ -222,7 +238,25 @@ export const Header: React.FC = () => {
             className="inline-flex items-center gap-2 px-4 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl transition-all cursor-pointer shadow-sm shadow-indigo-600/30"
           >
             <Plus className="w-4 h-4 stroke-[2.5]" />
-            <span>New Loan</span>
+            <span>New Entry</span>
+          </button>
+        )}
+
+        {pageView.name === 'section' && activeSection === 'Cash' && (
+          <button
+            type="button"
+            onClick={() =>
+              navigateTo({
+                name: 'cash-entry-form',
+                defaultDirection: 'Cash Out',
+                returnTo: { name: 'section', section: 'Cash' },
+              })
+            }
+            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition-all cursor-pointer shadow-sm shadow-emerald-600/30"
+          >
+            <Plus className="w-4 h-4 stroke-[2.5]" />
+            <span className="hidden sm:inline">Add Cash Entry</span>
+            <span className="sm:hidden">Cash Entry</span>
           </button>
         )}
 

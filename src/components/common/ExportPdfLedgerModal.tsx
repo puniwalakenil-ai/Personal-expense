@@ -20,6 +20,7 @@ import {
   LedgerPdfOptions,
   LedgerEntryItem,
 } from '../../utils/pdfLedgerGenerator';
+import { TechExpensesVideoLoader } from './TechExpensesLogo';
 
 export type DateFilterPreset = 'all' | 'this_month' | 'last_month' | 'last_30_days' | 'this_year' | 'custom';
 
@@ -113,18 +114,36 @@ export const ExportPdfLedgerModal: React.FC<ExportPdfModalProps> = ({
 
     const inRangeTxns: Transaction[] = [];
 
-    sorted.forEach((txn) => {
+    const classifyAmounts = (txn: Transaction) => {
+      const isAdjustment = txn.isAdjustment || txn.type === 'Adjustment' || txn.paymentMethod === 'Adjustment';
+      // On Cash & Bank ledgers, non-cash adjustments do not alter balances
+      if (isAdjustment && (ledgerType === 'bank' || ledgerType === 'cash')) {
+        return { creditAmount: 0, debitAmount: 0 };
+      }
+
+      const amt = Number(txn.amount) || 0;
       const isCredit =
         txn.type === 'Money Received' ||
         txn.type === 'Loan Taken' ||
-        txn.type === 'Credit Card Payment';
+        txn.type === 'Credit Card Payment' ||
+        (txn.type === 'Loan Repayment' && txn.loanDirection !== 'Payable') ||
+        (txn.type === 'ATM Withdrawal' && (ledgerType === 'cash' || txn.transferDirection === 'in'));
+
       const isDebit =
         txn.type === 'Expense' ||
         txn.type === 'Money Paid' ||
-        txn.type === 'Loan Given';
+        txn.type === 'Loan Given' ||
+        (txn.type === 'Loan Repayment' && txn.loanDirection === 'Payable') ||
+        (txn.type === 'ATM Withdrawal' && ledgerType !== 'cash' && txn.transferDirection !== 'in');
 
-      const creditAmount = isCredit ? Number(txn.amount) || 0 : 0;
-      const debitAmount = isDebit ? Number(txn.amount) || 0 : 0;
+      return {
+        creditAmount: isCredit ? amt : 0,
+        debitAmount: isDebit ? amt : 0,
+      };
+    };
+
+    sorted.forEach((txn) => {
+      const { creditAmount, debitAmount } = classifyAmounts(txn);
 
       const isBeforeStart = effectiveStart && txn.date < effectiveStart;
       const isAfterEnd = effectiveEnd && txn.date > effectiveEnd;
@@ -134,7 +153,7 @@ export const ExportPdfLedgerModal: React.FC<ExportPdfModalProps> = ({
           // Debits (spends) increase outstanding, credits (payments) decrease
           priorRunning = Math.max(0, priorRunning + debitAmount - creditAmount);
         } else if (!isCategory) {
-          // Bank, Cash, General: credits increase, debits decrease
+          // Bank, Cash, Loan, General: credits increase, debits decrease
           priorRunning = priorRunning + creditAmount - debitAmount;
         }
       } else if (!isAfterEnd) {
@@ -148,17 +167,7 @@ export const ExportPdfLedgerModal: React.FC<ExportPdfModalProps> = ({
     let periodTotalCredit = 0;
 
     const entries: LedgerEntryItem[] = inRangeTxns.map((txn) => {
-      const isCredit =
-        txn.type === 'Money Received' ||
-        txn.type === 'Loan Taken' ||
-        txn.type === 'Credit Card Payment';
-      const isDebit =
-        txn.type === 'Expense' ||
-        txn.type === 'Money Paid' ||
-        txn.type === 'Loan Given';
-
-      const creditAmount = isCredit ? Number(txn.amount) || 0 : 0;
-      const debitAmount = isDebit ? Number(txn.amount) || 0 : 0;
+      const { creditAmount, debitAmount } = classifyAmounts(txn);
 
       periodTotalDebit += debitAmount;
       periodTotalCredit += creditAmount;
@@ -501,7 +510,11 @@ export const ExportPdfLedgerModal: React.FC<ExportPdfModalProps> = ({
               className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-xs font-bold text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-50"
               title="Share PDF via AirDrop, WhatsApp, Email, or Files"
             >
-              <Share2 className="w-4 h-4 text-indigo-600" />
+              {isGenerating ? (
+                <TechExpensesVideoLoader size="xs" mode="loop" />
+              ) : (
+                <Share2 className="w-4 h-4 text-indigo-600" />
+              )}
               <span>Share PDF</span>
             </button>
 
@@ -511,7 +524,11 @@ export const ExportPdfLedgerModal: React.FC<ExportPdfModalProps> = ({
               disabled={isGenerating || calculatedLedger.entries.length === 0}
               className="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-5 py-2.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 rounded-xl transition-all shadow-md shadow-indigo-600/30 cursor-pointer disabled:opacity-50"
             >
-              <Download className="w-4 h-4 stroke-[2.5]" />
+              {isGenerating ? (
+                <TechExpensesVideoLoader size="xs" mode="loop" />
+              ) : (
+                <Download className="w-4 h-4 stroke-[2.5]" />
+              )}
               <span>{isGenerating ? 'Generating...' : 'Download PDF'}</span>
             </button>
           </div>

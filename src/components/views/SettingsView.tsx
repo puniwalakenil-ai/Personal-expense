@@ -1,6 +1,7 @@
 import React, { useRef } from 'react';
 import { Settings, RefreshCw, Download, Upload, ShieldAlert, Sparkles, Check } from 'lucide-react';
 import { useFinancial } from '../../context/FinancialContext';
+import { TechExpensesLogo } from '../common/TechExpensesLogo';
 
 export const SettingsView: React.FC = () => {
   const {
@@ -97,11 +98,9 @@ export const SettingsView: React.FC = () => {
   return (
     <div className="space-y-6 max-w-4xl">
       {/* Brand Profile Banner */}
-      <div className="p-6 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white rounded-2xl border border-slate-800 shadow-sm flex items-center gap-4">
-        <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-indigo-500 to-emerald-400 p-0.5 shadow-md shrink-0">
-          <div className="w-full h-full bg-slate-950 rounded-[14px] flex items-center justify-center font-black text-xl text-white">
-            TE
-          </div>
+      <div className="p-6 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white rounded-2xl border border-slate-800 shadow-sm flex flex-col sm:flex-row items-start sm:items-center gap-4">
+        <div className="bg-white rounded-2xl px-4 py-2.5 shadow-md border border-slate-200/80 shrink-0">
+          <TechExpensesLogo variant="wordmark" className="h-9 w-auto" />
         </div>
         <div>
           <h2 className="text-lg font-bold text-white tracking-tight">Tech Expenses</h2>

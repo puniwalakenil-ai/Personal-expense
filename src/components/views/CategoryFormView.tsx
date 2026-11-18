@@ -64,15 +64,15 @@ export const CategoryFormView: React.FC<Props> = ({ editId, defaultType = 'Expen
     },
     {
       type: 'Loan',
-      label: 'Loan',
-      desc: 'Borrowings, personal/bank loans, debt financing, loan settlements',
+      label: 'Loan & Advance',
+      desc: 'Loans & advances given or taken, person-wise settlements, loan tracking',
       icon: HandCoins,
       badgeBg: 'bg-blue-50 text-blue-700 border-blue-200',
     },
     {
       type: 'Advance',
-      label: 'Advance',
-      desc: 'Security deposits, staff advance, supplier advance, prepayments',
+      label: 'Unsecured Loan',
+      desc: 'Unsecured personal loans, shared expense payables, informal advances',
       icon: FileSpreadsheet,
       badgeBg: 'bg-purple-50 text-purple-700 border-purple-200',
     },
@@ -254,7 +254,10 @@ export const CategoryFormView: React.FC<Props> = ({ editId, defaultType = 'Expen
                 Category Type <span className="text-rose-500">*</span>
               </label>
               <span className="text-[11px] text-slate-400">
-                Selected: <strong className="text-indigo-600">{type}</strong>
+                Selected:{' '}
+                <strong className="text-indigo-600">
+                  {type === 'Loan' ? 'Loan & Advance' : type === 'Advance' ? 'Unsecured Loan' : type}
+                </strong>
               </span>
             </div>
 

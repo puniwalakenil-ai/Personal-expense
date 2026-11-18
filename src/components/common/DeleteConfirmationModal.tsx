@@ -1,9 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { AlertTriangle, Trash2, X } from 'lucide-react';
 import { useFinancial } from '../../context/FinancialContext';
+import { TechExpensesVideoLoader } from './TechExpensesLogo';
 
 export const DeleteConfirmationModal: React.FC = () => {
-  const { deleteModalState, confirmDelete, cancelDelete } = useFinancial();
+  const { deleteModalState, confirmDelete, completeDelete, cancelDelete } = useFinancial();
+  const [progress, setProgress] = useState(0);
 
   if (!deleteModalState.isOpen) return null;
 
@@ -11,19 +13,19 @@ export const DeleteConfirmationModal: React.FC = () => {
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs antialiased">
       <div className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden transform transition-all animate-in fade-in zoom-in-95 duration-200">
         {deleteModalState.isDeleting ? (
-          /* Requirement 18: Loading state displaying “Tech Expenses” branding + smooth circular loading indicator (3-4 seconds) */
-          <div className="p-8 flex flex-col items-center justify-center text-center space-y-5">
-            {/* Tech Expenses Brand Graphic & Spinner */}
-            <div className="relative w-20 h-20 flex items-center justify-center">
-              {/* Outer smooth spinning ring */}
-              <div className="absolute inset-0 rounded-full border-4 border-slate-100 border-t-indigo-600 animate-spin" />
-              {/* Inner branded symbol */}
-              <div className="w-12 h-12 rounded-xl bg-slate-900 flex items-center justify-center text-white font-black text-sm tracking-wider shadow-sm">
-                TE
-              </div>
-            </div>
+          /* Loading state displaying complete Tech Expenses MP4 logo animation from beginning to end */
+          <div className="p-6 sm:p-8 flex flex-col items-center justify-center text-center space-y-4">
+            <TechExpensesVideoLoader
+              mode="play-once"
+              size="lg"
+              onProgress={(pct) => setProgress(pct)}
+              onEnded={() => {
+                setProgress(0);
+                completeDelete();
+              }}
+            />
 
-            <div className="space-y-1.5">
+            <div className="space-y-1">
               <h3 className="text-base font-bold text-slate-900 tracking-tight">
                 Tech Expenses
               </h3>
@@ -33,7 +35,10 @@ export const DeleteConfirmationModal: React.FC = () => {
             </div>
 
             <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-              <div className="h-full bg-indigo-600 rounded-full animate-pulse w-3/4" />
+              <div
+                className="h-full bg-gradient-to-r from-[#021329] via-[#0d6efd] to-[#00b894] rounded-full transition-all duration-150 ease-out"
+                style={{ width: `${Math.max(4, Math.min(100, progress))}%` }}
+              />
             </div>
           </div>
         ) : (

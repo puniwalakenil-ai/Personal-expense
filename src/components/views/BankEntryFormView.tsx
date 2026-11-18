@@ -14,11 +14,17 @@ import {
   ArrowUpRight,
   Plus,
   Lock,
+  Banknote,
+  ArrowLeftRight,
 } from 'lucide-react';
 import { useFinancial } from '../../context/FinancialContext';
-import { PaymentMethod, PageView } from '../../types';
-import { getTodayDateString, formatCurrency, formatDate, maskAccountNumber, normalizeCategoryName } from '../../utils/formatters';
+import { useAuth } from '../../context/AuthContext';
+import { PaymentMethod, PageView, PendingAttachmentDraft, TransactionAttachmentMeta } from '../../types';
+import { getTodayDateString, formatCurrency, formatDate, maskAccountNumber, normalizeCategoryName, generateId } from '../../utils/formatters';
 import { InlineDropdown } from '../common/InlineDropdown';
+import { TechExpensesVideoLoader } from '../common/TechExpensesLogo';
+import { AttachmentPicker } from '../common/AttachmentPicker';
+import { savePendingAttachmentsToVault, deleteAttachmentsFromVault } from '../../services/attachmentService';
 
 interface Props {
   bankId: string;
@@ -32,6 +38,8 @@ interface Props {
     categoryId: string;
     narration?: string;
     notes?: string;
+    pendingAttachments?: PendingAttachmentDraft[];
+    removedAttachmentIds?: string[];
   };
   returnTo?: PageView;
 }
@@ -49,16 +57,18 @@ export const BankEntryFormView: React.FC<Props> = ({ bankId, editId, restoredSta
     addTransaction,
     updateTransaction,
     recordCreditCardPayment,
+    recordAtmWithdrawal,
     triggerSaveCelebration,
     navigateTo,
     goBack,
   } = useFinancial();
 
+  const { currentUser, isAuthorized } = useAuth();
   const bank = bankAccountsWithBalances.find((b) => b.id === bankId);
   const existingTxn = editId ? transactions.find((t) => t.id === editId) : null;
 
-  // Dedicated "Credit Card Bill Payment" mode (Requirement 6)
-  const [entryMode, setEntryMode] = useState<'standard' | 'cc-payment'>('standard');
+  // Dedicated "Credit Card Bill Payment" and "ATM Withdrawal" modes
+  const [entryMode, setEntryMode] = useState<'standard' | 'cc-payment' | 'atm-withdrawal'>('standard');
   const [selectedCardId, setSelectedCardId] = useState<string>(
     creditCardsWithOutstanding.length > 0 ? creditCardsWithOutstanding[0].id : ''
   );
@@ -91,6 +101,13 @@ export const BankEntryFormView: React.FC<Props> = ({ bankId, editId, restoredSta
   const [notes, setNotes] = useState(
     restoredState?.notes || existingTxn?.notes || ''
   );
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachmentDraft[]>(
+    restoredState?.pendingAttachments || []
+  );
+  const [removedAttachmentIds, setRemovedAttachmentIds] = useState<string[]>(
+    restoredState?.removedAttachmentIds || []
+  );
+  const [uploadProgress, setUploadProgress] = useState<{ percent: number; label: string } | null>(null);
   const [error, setError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
 
@@ -231,6 +248,8 @@ export const BankEntryFormView: React.FC<Props> = ({ bankId, editId, restoredSta
         paymentMethod,
         narration,
         notes,
+        pendingAttachments,
+        removedAttachmentIds,
       },
       returnTo: {
         name: 'bank-entry-form',
@@ -241,7 +260,13 @@ export const BankEntryFormView: React.FC<Props> = ({ bankId, editId, restoredSta
     });
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleToggleRemoveExistingAttachment = (attachmentId: string) => {
+    setRemovedAttachmentIds((prev) =>
+      prev.includes(attachmentId) ? prev.filter((id) => id !== attachmentId) : [...prev, attachmentId]
+    );
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
@@ -251,6 +276,8 @@ export const BankEntryFormView: React.FC<Props> = ({ bankId, editId, restoredSta
       setError('Selected bank account was not found. Please select a valid bank.');
       return;
     }
+
+    const activeUserId = isAuthorized ? currentUser?.uid : null;
 
     // Dedicated Credit Card Bill Payment Submission (Requirement 6, 7 & 8)
     if (entryMode === 'cc-payment') {
@@ -267,15 +294,30 @@ export const BankEntryFormView: React.FC<Props> = ({ bankId, editId, restoredSta
       }
 
       setIsSaving(true);
+      setUploadProgress(null);
 
       try {
+        const targetTxnId = generateId('ccpay');
+        let uploadedMetas: TransactionAttachmentMeta[] = [];
+        if (pendingAttachments.length > 0) {
+          uploadedMetas = await savePendingAttachmentsToVault({
+            userId: activeUserId,
+            transactionId: targetTxnId,
+            moduleType: 'bank',
+            accountScopeId: bank.id,
+            drafts: pendingAttachments,
+            onProgress: (percent, label) => setUploadProgress({ percent, label }),
+          });
+        }
+
         recordCreditCardPayment(
           card.id,
           numAmount,
           'Bank Account',
           bank.id,
           date,
-          narration.trim() || notes.trim() || undefined
+          narration.trim() || notes.trim() || undefined,
+          { id: targetTxnId, attachments: uploadedMetas }
         );
 
         triggerSaveCelebration({
@@ -288,9 +330,69 @@ export const BankEntryFormView: React.FC<Props> = ({ bankId, editId, restoredSta
         });
 
         navigateTo({ name: 'bank-detail', bankId: bank.id });
-      } catch {
+      } catch (err) {
         setIsSaving(false);
-        setError('Failed to record credit card bill payment. Please try again.');
+        setUploadProgress(null);
+        setError(err instanceof Error ? err.message : 'Failed to record credit card bill payment. Please try again.');
+      }
+      return;
+    }
+
+    // Dedicated ATM Cash Withdrawal mode (Requirement 2: Bank Debit + Cash Credit)
+    if (entryMode === 'atm-withdrawal') {
+      const numAmount = parseFloat(amount);
+      if (isNaN(numAmount) || numAmount <= 0) {
+        setError('Please enter a valid ATM withdrawal amount greater than 0.');
+        return;
+      }
+
+      setIsSaving(true);
+      setUploadProgress(null);
+      try {
+        const bankTxnId = generateId('atmbank');
+        let uploadedMetas: TransactionAttachmentMeta[] = [];
+        if (pendingAttachments.length > 0) {
+          uploadedMetas = await savePendingAttachmentsToVault({
+            userId: activeUserId,
+            transactionId: bankTxnId,
+            moduleType: 'bank',
+            accountScopeId: bank.id,
+            drafts: pendingAttachments,
+            onProgress: (percent, label) => setUploadProgress({ percent, label }),
+          });
+        }
+
+        const res = recordAtmWithdrawal({
+          bankAccountId: bank.id,
+          amount: numAmount,
+          date,
+          notes: notes.trim() || narration.trim() || undefined,
+          bankTxnId,
+          attachments: uploadedMetas,
+          attachmentOwner: 'bank',
+        });
+
+        if (!res) {
+          setIsSaving(false);
+          setUploadProgress(null);
+          setError('Failed to record ATM withdrawal.');
+          return;
+        }
+
+        triggerSaveCelebration({
+          title: 'ATM Withdrawal Saved',
+          subtitle: `Moved ${formatCurrency(numAmount)} from ${bank.bankName} to Cash-in-Hand`,
+          amount: numAmount,
+          direction: 'Money Out',
+          bankName: bank.bankName,
+          bankId: bank.id,
+        });
+
+        navigateTo({ name: 'bank-detail', bankId: bank.id });
+      } catch (err) {
+        setIsSaving(false);
+        setUploadProgress(null);
+        setError(err instanceof Error ? err.message : 'Failed to record ATM withdrawal. Please try again.');
       }
       return;
     }
@@ -307,9 +409,38 @@ export const BankEntryFormView: React.FC<Props> = ({ bankId, editId, restoredSta
     }
 
     setIsSaving(true);
+    setUploadProgress(null);
 
     try {
       const selectedCat = categories.find((c) => c.id === categoryId);
+      const txnType =
+        editId && existingTxn && (existingTxn.type === 'Credit Card Payment' || existingTxn.type === 'Money Paid')
+          ? existingTxn.type
+          : direction === 'Money In'
+          ? ('Money Received' as const)
+          : ('Expense' as const);
+      const targetTxnId = existingTxn?.id || generateId(txnType === 'Money Received' ? 'rec' : 'exp');
+
+      const existingKept = (existingTxn?.attachments || []).filter(
+        (a) => !removedAttachmentIds.includes(a.id)
+      );
+      const removedList = (existingTxn?.attachments || []).filter((a) =>
+        removedAttachmentIds.includes(a.id)
+      );
+
+      let newlyUploaded: TransactionAttachmentMeta[] = [];
+      if (pendingAttachments.length > 0) {
+        newlyUploaded = await savePendingAttachmentsToVault({
+          userId: activeUserId,
+          transactionId: targetTxnId,
+          moduleType: 'bank',
+          accountScopeId: bank.id,
+          drafts: pendingAttachments,
+          onProgress: (percent, label) => setUploadProgress({ percent, label }),
+        });
+      }
+
+      const combinedAttachments = [...existingKept, ...newlyUploaded];
 
       const txnPayload = {
         date,
@@ -318,11 +449,16 @@ export const BankEntryFormView: React.FC<Props> = ({ bankId, editId, restoredSta
         categoryId: categoryId || undefined,
         categoryName: selectedCat?.name,
         amount: numAmount,
-        type: direction === 'Money In' ? ('Money Received' as const) : ('Expense' as const),
+        type: txnType,
         paymentMethod,
         bankAccountId: bank.id,
         bankAccountName: bank.bankName,
         notes: notes.trim() || undefined,
+        ...(editId
+          ? { attachments: combinedAttachments }
+          : combinedAttachments.length > 0
+          ? { attachments: combinedAttachments }
+          : {}),
       };
 
       // Permanently lock Details/Name with this category for all future entries
@@ -332,8 +468,14 @@ export const BankEntryFormView: React.FC<Props> = ({ bankId, editId, restoredSta
 
       if (editId && existingTxn) {
         updateTransaction(editId, txnPayload);
+        if (removedList.length > 0) {
+          deleteAttachmentsFromVault({
+            userId: activeUserId,
+            attachments: removedList,
+          }).catch((err) => console.error('Failed to delete removed attachments:', err));
+        }
       } else {
-        addTransaction(txnPayload);
+        addTransaction({ ...txnPayload, id: targetTxnId });
       }
 
       // Requirement 2: Centered success message with exact text "Entry Saved Successfully"
@@ -351,9 +493,10 @@ export const BankEntryFormView: React.FC<Props> = ({ bankId, editId, restoredSta
 
       // Requirement 2: Automatically save entry, close entry form, and return to selected bank's passbook page
       navigateTo({ name: 'bank-detail', bankId: bank.id });
-    } catch {
+    } catch (err) {
       setIsSaving(false);
-      setError('Failed to save bank entry. Please try again.');
+      setUploadProgress(null);
+      setError(err instanceof Error ? err.message : 'Failed to save bank entry. Please try again.');
     }
   };
 
@@ -375,6 +518,8 @@ export const BankEntryFormView: React.FC<Props> = ({ bankId, editId, restoredSta
           categoryId,
           narration,
           notes,
+          pendingAttachments,
+          removedAttachmentIds,
         },
         returnTo,
       },
@@ -441,14 +586,14 @@ export const BankEntryFormView: React.FC<Props> = ({ bankId, editId, restoredSta
           </div>
         </div>
 
-        {/* Entry Mode Selector: Standard Bank Entry vs Dedicated Credit Card Bill Payment (Requirement 6) */}
+        {/* Entry Mode Selector: Standard Bank Entry vs Credit Card Bill Payment vs ATM Withdrawal */}
         {!editId && (
-          <div className="p-4 bg-slate-50/80 border-b border-slate-200/80 flex items-center justify-between gap-3">
+          <div className="p-4 bg-slate-50/80 border-b border-slate-200/80 flex items-center justify-between gap-3 overflow-x-auto">
             <div className="flex items-center gap-1.5 p-1 bg-white border border-slate-200/80 rounded-xl shadow-2xs w-full sm:w-auto">
               <button
                 type="button"
                 onClick={() => setEntryMode('standard')}
-                className={`flex-1 sm:flex-initial px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                className={`flex-1 sm:flex-initial px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
                   entryMode === 'standard'
                     ? 'bg-slate-900 text-white shadow-xs'
                     : 'text-slate-600 hover:text-slate-900'
@@ -458,13 +603,25 @@ export const BankEntryFormView: React.FC<Props> = ({ bankId, editId, restoredSta
               </button>
               <button
                 type="button"
+                onClick={() => setEntryMode('atm-withdrawal')}
+                className={`flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+                  entryMode === 'atm-withdrawal'
+                    ? 'bg-amber-600 text-white shadow-xs'
+                    : 'text-amber-700 hover:bg-amber-50'
+                }`}
+              >
+                <Banknote className="w-3.5 h-3.5" />
+                <span>ATM Cash Withdrawal</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => {
                   setEntryMode('cc-payment');
                   if (!selectedCardId && creditCardsWithOutstanding.length > 0) {
                     setSelectedCardId(creditCardsWithOutstanding[0].id);
                   }
                 }}
-                className={`flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                className={`flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
                   entryMode === 'cc-payment'
                     ? 'bg-purple-600 text-white shadow-xs'
                     : 'text-purple-700 hover:bg-purple-50'
@@ -484,7 +641,74 @@ export const BankEntryFormView: React.FC<Props> = ({ bankId, editId, restoredSta
             </div>
           )}
 
-          {entryMode === 'cc-payment' ? (
+          {entryMode === 'atm-withdrawal' ? (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                    Withdrawal Date <span className="text-rose-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <Calendar className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="date"
+                      value={date}
+                      onChange={(e) => setDate(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-amber-600 font-medium text-slate-900"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                    Withdrawal Amount (₹) <span className="text-rose-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <span className="text-xs font-bold text-slate-400 absolute left-3 top-1/2 -translate-y-1/2">
+                      ₹
+                    </span>
+                    <input
+                      type="number"
+                      step="any"
+                      placeholder="0.00"
+                      value={amount}
+                      onChange={(e) => setAmount(e.target.value)}
+                      className="w-full pl-8 pr-3 py-2 text-xs font-mono font-bold bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-amber-600 text-slate-900"
+                      required
+                      autoFocus
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                  ATM Location / Notes (Optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. ATM cash withdrawal for wallet..."
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-amber-600 text-slate-900"
+                />
+              </div>
+
+              <div className="p-3.5 bg-amber-50/80 border border-amber-200 rounded-xl text-xs text-amber-900 space-y-1">
+                <div className="font-bold flex items-center gap-1.5 text-amber-950">
+                  <ArrowLeftRight className="w-3.5 h-3.5 text-amber-600" />
+                  <span>Automatic Bank & Cash Linking (Internal Transfer)</span>
+                </div>
+                <p className="text-[11px] text-amber-800">
+                  Saving this withdrawal automatically records:
+                  <br />• <strong>{bank.bankName}</strong>: Money Out (Debit)
+                  <br />• <strong>Cash / Cash-in-Hand</strong>: Cash In (Credit)
+                  <br />• Treated as an internal transfer (excluded from Income & Expense reports).
+                </p>
+              </div>
+            </>
+          ) : entryMode === 'cc-payment' ? (
             /* Dedicated Credit Card Bill Payment Fields (Requirement 6, 7 & 8) */
             <>
               {creditCardsWithOutstanding.length === 0 ? (
@@ -965,6 +1189,21 @@ export const BankEntryFormView: React.FC<Props> = ({ bankId, editId, restoredSta
           </>
           )}
 
+          {/* Attach Section (PDF, Camera, Gallery) */}
+          {(entryMode !== 'cc-payment' || creditCardsWithOutstanding.length > 0) && (
+            <AttachmentPicker
+              existingAttachments={existingTxn?.attachments || []}
+              removedAttachmentIds={removedAttachmentIds}
+              pendingAttachments={pendingAttachments}
+              onAddPending={(drafts) => setPendingAttachments((prev) => [...prev, ...drafts])}
+              onRemovePending={(id) => setPendingAttachments((prev) => prev.filter((d) => d.id !== id))}
+              onToggleRemoveExisting={handleToggleRemoveExistingAttachment}
+              disabled={isSaving}
+              uploadProgress={uploadProgress}
+              accentColor={entryMode === 'cc-payment' ? 'purple' : entryMode === 'atm-withdrawal' ? 'amber' : 'indigo'}
+            />
+          )}
+
           {/* Form Actions */}
           <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
             <button
@@ -980,17 +1219,25 @@ export const BankEntryFormView: React.FC<Props> = ({ bankId, editId, restoredSta
               className={`inline-flex items-center gap-2 px-5 py-2.5 text-xs font-bold text-white ${
                 entryMode === 'cc-payment'
                   ? 'bg-purple-600 hover:bg-purple-700 shadow-purple-600/30'
+                  : entryMode === 'atm-withdrawal'
+                  ? 'bg-amber-600 hover:bg-amber-700 shadow-amber-600/30'
                   : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-600/30'
               } rounded-xl transition-colors shadow-xs cursor-pointer ${
-                isSaving ? 'opacity-60 cursor-not-allowed' : ''
+                isSaving ? 'opacity-80 cursor-not-allowed' : ''
               }`}
             >
-              <Check className="w-4 h-4" />
+              {isSaving ? (
+                <TechExpensesVideoLoader size="xs" mode="loop" />
+              ) : (
+                <Check className="w-4 h-4" />
+              )}
               <span>
                 {isSaving
                   ? 'Saving...'
                   : entryMode === 'cc-payment'
                   ? 'Record Bill Payment'
+                  : entryMode === 'atm-withdrawal'
+                  ? 'Record ATM Withdrawal'
                   : editId
                   ? 'Update Bank Entry'
                   : 'Save Bank Entry'}

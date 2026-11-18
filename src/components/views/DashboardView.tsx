@@ -90,15 +90,14 @@ export const DashboardView: React.FC = () => {
     let paidOut = 0;
 
     summary.filteredTransactions.forEach((t) => {
-      if (t.type === 'Money Received' || t.type === 'Loan Taken') {
+      if (t.isInternalTransfer || t.type === 'ATM Withdrawal' || t.isAdjustment || t.type === 'Adjustment') return;
+      if (t.type === 'Loan Given' || t.type === 'Loan Taken' || t.type === 'Loan Repayment' || t.loanId) return;
+
+      if (t.type === 'Money Received') {
         income += t.amount;
       } else if (t.type === 'Expense') {
         expense += t.amount;
-      } else if (
-        t.type === 'Money Paid' ||
-        t.type === 'Credit Card Payment' ||
-        t.type === 'Loan Given'
-      ) {
+      } else if (t.type === 'Money Paid' || t.type === 'Credit Card Payment') {
         paidOut += t.amount;
       }
     });
@@ -126,11 +125,15 @@ export const DashboardView: React.FC = () => {
   const filteredTxns = useMemo(() => {
     switch (activeTab) {
       case 'Income':
-        return summary.filteredTransactions.filter((t) => t.type === 'Money Received' || t.type === 'Loan Taken');
+        return summary.filteredTransactions.filter((t) => t.type === 'Money Received' && !t.loanId);
       case 'Expense':
-        return summary.filteredTransactions.filter((t) => t.type === 'Expense' || t.type === 'Money Paid');
+        return summary.filteredTransactions.filter(
+          (t) => (t.type === 'Expense' || t.type === 'Money Paid') && !t.loanId && !t.isInternalTransfer
+        );
       case 'Loans':
-        return summary.filteredTransactions.filter((t) => t.type === 'Loan Given' || t.type === 'Loan Taken');
+        return summary.filteredTransactions.filter(
+          (t) => t.type === 'Loan Given' || t.type === 'Loan Taken' || t.type === 'Loan Repayment' || !!t.loanId
+        );
       default:
         return summary.filteredTransactions;
     }
@@ -143,7 +146,16 @@ export const DashboardView: React.FC = () => {
     filteredTxns.forEach((txn) => {
       const existing = map.get(txn.date) || { date: txn.date, items: [], dayTotal: 0 };
       existing.items.push(txn);
-      if (txn.type === 'Expense' || txn.type === 'Money Paid' || txn.type === 'Loan Given') {
+      const isOutflowTxn =
+        txn.type === 'Expense' ||
+        txn.type === 'Money Paid' ||
+        txn.type === 'Loan Given' ||
+        txn.type === 'Credit Card Payment' ||
+        (txn.type === 'Loan Repayment' && txn.loanDirection === 'Payable') ||
+        (txn.type === 'ATM Withdrawal' && txn.transferDirection !== 'in');
+      if (txn.isAdjustment || txn.type === 'Adjustment') {
+        // adjustments do not alter daily net cash flow
+      } else if (isOutflowTxn) {
         existing.dayTotal -= txn.amount;
       } else {
         existing.dayTotal += txn.amount;
@@ -745,7 +757,9 @@ export const DashboardView: React.FC = () => {
                       txn.type === 'Expense' ||
                       txn.type === 'Money Paid' ||
                       txn.type === 'Loan Given' ||
-                      txn.type === 'Credit Card Payment';
+                      txn.type === 'Credit Card Payment' ||
+                      (txn.type === 'Loan Repayment' && txn.loanDirection === 'Payable') ||
+                      (txn.type === 'ATM Withdrawal' && txn.transferDirection !== 'in');
                     const iconConfig = getCategoryIcon(txn.categoryName || txn.title);
                     const Icon = iconConfig.icon;
 

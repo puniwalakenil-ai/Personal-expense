@@ -12,8 +12,12 @@ import {
   Lock,
 } from 'lucide-react';
 import { useFinancial } from '../../context/FinancialContext';
-import { PaymentMethod, PageView } from '../../types';
-import { getTodayDateString, formatCurrency, normalizeCategoryName } from '../../utils/formatters';
+import { useAuth } from '../../context/AuthContext';
+import { PaymentMethod, PageView, PendingAttachmentDraft, TransactionAttachmentMeta } from '../../types';
+import { getTodayDateString, formatCurrency, normalizeCategoryName, generateId } from '../../utils/formatters';
+import { TechExpensesVideoLoader } from '../common/TechExpensesLogo';
+import { AttachmentPicker } from '../common/AttachmentPicker';
+import { savePendingAttachmentsToVault, deleteAttachmentsFromVault } from '../../services/attachmentService';
 
 interface Props {
   cardId: string;
@@ -27,6 +31,8 @@ interface Props {
     categoryId: string;
     narration?: string;
     notes?: string;
+    pendingAttachments?: PendingAttachmentDraft[];
+    removedAttachmentIds?: string[];
   };
   returnTo?: PageView;
 }
@@ -47,6 +53,7 @@ export const CreditCardEntryFormView: React.FC<Props> = ({ cardId, editId, resto
     goBack,
   } = useFinancial();
 
+  const { currentUser, isAuthorized } = useAuth();
   const card = creditCardsWithOutstanding.find((c) => c.id === cardId);
   const existingTxn = editId ? transactions.find((t) => t.id === editId) : null;
 
@@ -73,6 +80,13 @@ export const CreditCardEntryFormView: React.FC<Props> = ({ cardId, editId, resto
   const [notes, setNotes] = useState(
     restoredState?.notes || existingTxn?.notes || ''
   );
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachmentDraft[]>(
+    restoredState?.pendingAttachments || []
+  );
+  const [removedAttachmentIds, setRemovedAttachmentIds] = useState<string[]>(
+    restoredState?.removedAttachmentIds || []
+  );
+  const [uploadProgress, setUploadProgress] = useState<{ percent: number; label: string } | null>(null);
   const [error, setError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
 
@@ -208,6 +222,8 @@ export const CreditCardEntryFormView: React.FC<Props> = ({ cardId, editId, resto
         creditCardId: cardId,
         narration,
         notes,
+        pendingAttachments,
+        removedAttachmentIds,
       },
       returnTo: {
         name: 'credit-card-entry-form',
@@ -218,7 +234,13 @@ export const CreditCardEntryFormView: React.FC<Props> = ({ cardId, editId, resto
     });
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleToggleRemoveExistingAttachment = (attachmentId: string) => {
+    setRemovedAttachmentIds((prev) =>
+      prev.includes(attachmentId) ? prev.filter((id) => id !== attachmentId) : [...prev, attachmentId]
+    );
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
@@ -241,9 +263,34 @@ export const CreditCardEntryFormView: React.FC<Props> = ({ cardId, editId, resto
     }
 
     setIsSaving(true);
+    setUploadProgress(null);
+    const activeUserId = isAuthorized ? currentUser?.uid : null;
 
     try {
       const selectedCat = categories.find((c) => c.id === categoryId);
+      const txnType = direction === 'Money In' ? ('Money Received' as const) : ('Expense' as const);
+      const targetTxnId = existingTxn?.id || generateId(txnType === 'Money Received' ? 'rec' : 'exp');
+
+      const existingKept = (existingTxn?.attachments || []).filter(
+        (a) => !removedAttachmentIds.includes(a.id)
+      );
+      const removedList = (existingTxn?.attachments || []).filter((a) =>
+        removedAttachmentIds.includes(a.id)
+      );
+
+      let newlyUploaded: TransactionAttachmentMeta[] = [];
+      if (pendingAttachments.length > 0) {
+        newlyUploaded = await savePendingAttachmentsToVault({
+          userId: activeUserId,
+          transactionId: targetTxnId,
+          moduleType: 'credit-card',
+          accountScopeId: card.id,
+          drafts: pendingAttachments,
+          onProgress: (percent, label) => setUploadProgress({ percent, label }),
+        });
+      }
+
+      const combinedAttachments = [...existingKept, ...newlyUploaded];
 
       const txnPayload = {
         date,
@@ -252,11 +299,16 @@ export const CreditCardEntryFormView: React.FC<Props> = ({ cardId, editId, resto
         categoryId: categoryId || undefined,
         categoryName: selectedCat?.name,
         amount: numAmount,
-        type: direction === 'Money In' ? ('Money Received' as const) : ('Expense' as const),
+        type: txnType,
         paymentMethod: 'Credit Card' as const,
         creditCardId: card.id,
         creditCardName: card.cardName,
         notes: notes.trim() || undefined,
+        ...(editId
+          ? { attachments: combinedAttachments }
+          : combinedAttachments.length > 0
+          ? { attachments: combinedAttachments }
+          : {}),
       };
 
       // Permanently lock Details/Name with this category
@@ -266,8 +318,14 @@ export const CreditCardEntryFormView: React.FC<Props> = ({ cardId, editId, resto
 
       if (editId && existingTxn) {
         updateTransaction(editId, txnPayload);
+        if (removedList.length > 0) {
+          deleteAttachmentsFromVault({
+            userId: activeUserId,
+            attachments: removedList,
+          }).catch((err) => console.error('Failed to delete removed attachments:', err));
+        }
       } else {
-        addTransaction(txnPayload);
+        addTransaction({ ...txnPayload, id: targetTxnId });
       }
 
       // Trigger celebration toast
@@ -283,9 +341,10 @@ export const CreditCardEntryFormView: React.FC<Props> = ({ cardId, editId, resto
 
       // Automatically return to credit card statement
       navigateTo({ name: 'credit-card-detail', cardId: card.id });
-    } catch {
+    } catch (err) {
       setIsSaving(false);
-      setError('Failed to save credit card entry. Please try again.');
+      setUploadProgress(null);
+      setError(err instanceof Error ? err.message : 'Failed to save credit card entry. Please try again.');
     }
   };
 
@@ -612,6 +671,19 @@ export const CreditCardEntryFormView: React.FC<Props> = ({ cardId, editId, resto
             />
           </div>
 
+          {/* Attach Section (PDF, Camera, Gallery) */}
+          <AttachmentPicker
+            existingAttachments={existingTxn?.attachments || []}
+            removedAttachmentIds={removedAttachmentIds}
+            pendingAttachments={pendingAttachments}
+            onAddPending={(drafts) => setPendingAttachments((prev) => [...prev, ...drafts])}
+            onRemovePending={(id) => setPendingAttachments((prev) => prev.filter((d) => d.id !== id))}
+            onToggleRemoveExisting={handleToggleRemoveExistingAttachment}
+            disabled={isSaving}
+            uploadProgress={uploadProgress}
+            accentColor="purple"
+          />
+
           {/* Form Actions */}
           <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
             <button
@@ -625,10 +697,14 @@ export const CreditCardEntryFormView: React.FC<Props> = ({ cardId, editId, resto
               type="submit"
               disabled={isSaving}
               className={`inline-flex items-center gap-2 px-5 py-2.5 text-xs font-bold text-white bg-purple-600 hover:bg-purple-700 rounded-xl transition-colors shadow-xs shadow-purple-600/30 cursor-pointer ${
-                isSaving ? 'opacity-60 cursor-not-allowed' : ''
+                isSaving ? 'opacity-80 cursor-not-allowed' : ''
               }`}
             >
-              <Check className="w-4 h-4" />
+              {isSaving ? (
+                <TechExpensesVideoLoader size="xs" mode="loop" />
+              ) : (
+                <Check className="w-4 h-4" />
+              )}
               <span>{isSaving ? 'Saving...' : editId ? 'Update Card Entry' : 'Save Card Entry'}</span>
             </button>
           </div>

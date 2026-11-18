@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Suspense } from 'react';
 import { AuthProvider } from './context/AuthContext';
 import { AuthGuard } from './components/auth/AuthGuard';
 import { FinancialProvider, useFinancial } from './context/FinancialContext';
@@ -6,6 +6,7 @@ import { Sidebar } from './components/navigation/Sidebar';
 import { Header } from './components/navigation/Header';
 import { DeleteConfirmationModal } from './components/common/DeleteConfirmationModal';
 import { MobileTabBar } from './components/navigation/MobileTabBar';
+import { TechExpensesLoadingScreen } from './components/common/TechExpensesLogo';
 
 // Primary Full-Page Views
 import { DashboardView } from './components/views/DashboardView';
@@ -36,6 +37,8 @@ import { LoanRepayFormView } from './components/views/LoanRepayFormView';
 import { CategoryFormView } from './components/views/CategoryFormView';
 import { BankEntryFormView } from './components/views/BankEntryFormView';
 import { CreditCardEntryFormView } from './components/views/CreditCardEntryFormView';
+import { CashEntryFormView } from './components/views/CashEntryFormView';
+import { AtmWithdrawalFormView } from './components/views/AtmWithdrawalFormView';
 import { UpiFormView } from './components/views/UpiFormView';
 
 // Full-Page Detail Views (Requirement 5: Clicking an entry, category, bank, credit card, loan opens full page)
@@ -44,6 +47,7 @@ import { CategoryDetailView } from './components/views/CategoryDetailView';
 import { BankDetailView } from './components/views/BankDetailView';
 import { CreditCardDetailView } from './components/views/CreditCardDetailView';
 import { LoanDetailView } from './components/views/LoanDetailView';
+import { PersonLoanDetailView } from './components/views/PersonLoanDetailView';
 import { NotificationsView } from './components/views/NotificationsView';
 
 const MainLayout: React.FC = () => {
@@ -135,10 +139,41 @@ const MainLayout: React.FC = () => {
         return <CreditCardFormView editId={pageView.editId} returnTo={pageView.returnTo} />;
       case 'credit-card-payment-form':
         return <CreditCardPaymentFormView cardId={pageView.cardId} returnTo={pageView.returnTo} />;
+      case 'cash-entry-form':
+        return (
+          <CashEntryFormView
+            editId={pageView.editId}
+            defaultDirection={pageView.defaultDirection}
+            restoredState={pageView.restoredState}
+            returnTo={pageView.returnTo}
+          />
+        );
+      case 'atm-withdrawal-form':
+        return (
+          <AtmWithdrawalFormView
+            defaultBankId={pageView.defaultBankId}
+            returnTo={pageView.returnTo}
+          />
+        );
       case 'loan-form':
-        return <LoanFormView editId={pageView.editId} defaultType={pageView.defaultType} returnTo={pageView.returnTo} />;
+        return (
+          <LoanFormView
+            editId={pageView.editId}
+            defaultType={pageView.defaultType}
+            defaultDirection={pageView.defaultDirection}
+            defaultPersonName={pageView.defaultPersonName}
+            returnTo={pageView.returnTo}
+          />
+        );
       case 'loan-repay-form':
-        return <LoanRepayFormView loanId={pageView.loanId} returnTo={pageView.returnTo} />;
+        return (
+          <LoanRepayFormView
+            loanId={pageView.loanId}
+            personName={pageView.personName}
+            mode={pageView.mode}
+            returnTo={pageView.returnTo}
+          />
+        );
       case 'category-form':
         return <CategoryFormView editId={pageView.editId} defaultType={pageView.defaultType} returnTo={pageView.returnTo} />;
       case 'upi-form':
@@ -155,6 +190,8 @@ const MainLayout: React.FC = () => {
         return <CreditCardDetailView cardId={pageView.cardId} returnTo={pageView.returnTo} />;
       case 'loan-detail':
         return <LoanDetailView loanId={pageView.loanId} returnTo={pageView.returnTo} />;
+      case 'person-loan-detail':
+        return <PersonLoanDetailView personName={pageView.personName} returnTo={pageView.returnTo} />;
       case 'notifications':
         return <NotificationsView returnTo={pageView.returnTo} />;
 
@@ -176,7 +213,19 @@ const MainLayout: React.FC = () => {
 
           {/* Main Viewport Container - Balanced, comfortable width for PC / Windows and mobile */}
           <main className="flex-1 p-4 sm:p-6 lg:p-7 max-w-6xl w-full mx-auto pb-24 lg:pb-12">
-            {renderActiveView()}
+            <Suspense
+              fallback={
+                <TechExpensesLoadingScreen
+                  mode="loop"
+                  variant="light"
+                  title="Tech Expenses"
+                  subtitle="Loading page..."
+                  showProgressBar={false}
+                />
+              }
+            >
+              {renderActiveView()}
+            </Suspense>
           </main>
         </div>
       </div>

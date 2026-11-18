@@ -1,15 +1,17 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Tag, ArrowLeft, Check, Sparkles, Plus } from 'lucide-react';
 import { useFinancial } from '../../context/FinancialContext';
-import { PageView, PaymentMethod } from '../../types';
+import { PageView, PaymentMethod, PendingAttachmentDraft } from '../../types';
 import { normalizeCategoryName } from '../../utils/formatters';
 import { InlineDropdown } from '../common/InlineDropdown';
 
 interface FormStateToRestore {
-  formType: 'expense' | 'money-paid' | 'money-received' | 'bank-entry' | 'credit-card-entry';
+  formType: 'expense' | 'money-paid' | 'money-received' | 'bank-entry' | 'credit-card-entry' | 'cash-entry';
   date: string;
   amount: string;
   direction?: 'Money Out' | 'Money In';
+  cashDirection?: 'Cash In' | 'Cash Out';
+  cashOutType?: 'Expense' | 'Money Paid';
   paymentMethod: PaymentMethod;
   bankId?: string;
   cardId?: string;
@@ -19,6 +21,8 @@ interface FormStateToRestore {
   personName?: string;
   narration?: string;
   notes?: string;
+  pendingAttachments?: PendingAttachmentDraft[];
+  removedAttachmentIds?: string[];
   editId?: string;
 }
 
@@ -133,6 +137,8 @@ export const CreateNameFormView: React.FC<Props> = ({
             paymentMethod: formStateToRestore.paymentMethod,
             narration: formStateToRestore.narration,
             notes: formStateToRestore.notes,
+            pendingAttachments: formStateToRestore.pendingAttachments,
+            removedAttachmentIds: formStateToRestore.removedAttachmentIds,
           },
           returnTo,
         });
@@ -152,6 +158,29 @@ export const CreateNameFormView: React.FC<Props> = ({
             paymentMethod: formStateToRestore.paymentMethod,
             narration: formStateToRestore.narration,
             notes: formStateToRestore.notes,
+            pendingAttachments: formStateToRestore.pendingAttachments,
+            removedAttachmentIds: formStateToRestore.removedAttachmentIds,
+          },
+          returnTo,
+        });
+        return;
+      }
+      if (formStateToRestore.formType === 'cash-entry') {
+        navigateTo({
+          name: 'cash-entry-form',
+          editId: formStateToRestore.editId,
+          defaultDirection: formStateToRestore.cashDirection || 'Cash Out',
+          restoredState: {
+            title: initialName,
+            categoryId: selectedCategoryId,
+            date: formStateToRestore.date,
+            amount: formStateToRestore.amount,
+            direction: formStateToRestore.cashDirection || 'Cash Out',
+            cashOutType: formStateToRestore.cashOutType || 'Expense',
+            narration: formStateToRestore.narration,
+            notes: formStateToRestore.notes,
+            pendingAttachments: formStateToRestore.pendingAttachments,
+            removedAttachmentIds: formStateToRestore.removedAttachmentIds,
           },
           returnTo,
         });
@@ -201,6 +230,8 @@ export const CreateNameFormView: React.FC<Props> = ({
             paymentMethod: formStateToRestore.paymentMethod,
             narration: formStateToRestore.narration,
             notes: formStateToRestore.notes,
+            pendingAttachments: formStateToRestore.pendingAttachments,
+            removedAttachmentIds: formStateToRestore.removedAttachmentIds,
           },
           returnTo,
         });
@@ -220,6 +251,8 @@ export const CreateNameFormView: React.FC<Props> = ({
             paymentMethod: formStateToRestore.paymentMethod,
             narration: formStateToRestore.narration,
             notes: formStateToRestore.notes,
+            pendingAttachments: formStateToRestore.pendingAttachments,
+            removedAttachmentIds: formStateToRestore.removedAttachmentIds,
           },
           returnTo,
         });
@@ -259,6 +292,27 @@ export const CreateNameFormView: React.FC<Props> = ({
             creditCardId: formStateToRestore.creditCardId,
             upiId: formStateToRestore.upiId,
             notes: formStateToRestore.notes,
+          },
+          returnTo,
+        });
+        return;
+      }
+      if (formStateToRestore.formType === 'cash-entry') {
+        navigateTo({
+          name: 'cash-entry-form',
+          editId: formStateToRestore.editId,
+          defaultDirection: formStateToRestore.cashDirection || 'Cash Out',
+          restoredState: {
+            title: trimmedName,
+            categoryId: selectedCategoryId,
+            date: formStateToRestore.date,
+            amount: formStateToRestore.amount,
+            direction: formStateToRestore.cashDirection || 'Cash Out',
+            cashOutType: formStateToRestore.cashOutType || 'Expense',
+            narration: formStateToRestore.narration,
+            notes: formStateToRestore.notes,
+            pendingAttachments: formStateToRestore.pendingAttachments,
+            removedAttachmentIds: formStateToRestore.removedAttachmentIds,
           },
           returnTo,
         });

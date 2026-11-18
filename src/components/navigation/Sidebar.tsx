@@ -20,6 +20,7 @@ import { useFinancial } from '../../context/FinancialContext';
 import { useAuth } from '../../context/AuthContext';
 import { NavSection } from '../../types';
 import { formatCompactCurrency } from '../../utils/formatters';
+import { TechExpensesLogo } from '../common/TechExpensesLogo';
 
 interface NavItemConfig {
   id: NavSection;
@@ -90,23 +91,16 @@ export const Sidebar: React.FC = () => {
         }`}
       >
         {/* Brand Header */}
-        <div className="h-16 flex items-center justify-between px-5 border-b border-slate-800 shrink-0">
+        <div className="h-16 flex items-center justify-between px-4 border-b border-slate-800 shrink-0">
           <button
             type="button"
             onClick={() => handleNavClick('Dashboard')}
-            className="flex items-center gap-3 text-left cursor-pointer group"
+            className="flex items-center gap-2.5 text-left cursor-pointer group min-w-0"
+            title="Tech Expenses — Go to Dashboard"
           >
-            {/* Tech Expenses Unique Brand Icon */}
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-emerald-400 p-[1px] shadow-sm">
-              <div className="w-full h-full bg-slate-950 rounded-[11px] flex items-center justify-center text-white font-black text-sm tracking-tight">
-                TE
-              </div>
-            </div>
-            <div>
-              <div className="font-bold text-sm text-white tracking-tight leading-none group-hover:text-indigo-300 transition-colors">
-                Tech Expenses
-              </div>
-              <div className="text-[10px] text-slate-400 font-medium mt-1">Personal Finance</div>
+            {/* Official Tech Expenses Logo Badge */}
+            <div className="bg-white rounded-xl px-2.5 py-1.5 shadow-sm border border-slate-200/80 group-hover:shadow-md transition-all">
+              <TechExpensesLogo variant="wordmark" className="h-6 w-auto" />
             </div>
           </button>
 

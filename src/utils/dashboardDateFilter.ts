@@ -150,9 +150,11 @@ export interface FilteredSummaryResult {
 
 /**
  * Calculates accurate income, expenses, and category breakdown for a set of transactions.
- * STRICTLY avoids double counting:
+ * STRICTLY avoids double counting and respects Requirement 8 accounting rules:
+ * - Internal transfers (ATM withdrawals) are NOT counted as income or expenses.
+ * - Adjustment entries are NOT counted as cash/bank income or expenses.
  * - Credit Card Payment is debt transfer / settlement, NOT a new expense.
- * - Bank Transfer is internal movement, NOT a new expense or income.
+ * - Loan disbursements, loan repayments, and loan receipts are NOT counted as new income or expenses.
  */
 export function computeFilteredDashboardSummary(
   allTransactions: Transaction[],
@@ -175,12 +177,26 @@ export function computeFilteredDashboardSummary(
   filtered.forEach((t) => {
     const amt = Number(t.amount) || 0;
 
+    // Exclude internal transfers (e.g., ATM withdrawals) and non-cash Adjustments from Income & Expense stats
+    if (t.isInternalTransfer || t.type === 'ATM Withdrawal' || t.isAdjustment || t.type === 'Adjustment' || t.paymentMethod === 'Adjustment') {
+      return;
+    }
+
+    // Loan entries and loan settlements must NOT inflate Income or Expense totals
+    if (t.type === 'Loan Given') {
+      totalLoansGiven += amt;
+      return;
+    }
+    if (t.type === 'Loan Taken') {
+      totalLoansTaken += amt;
+      return;
+    }
+    if (t.type === 'Loan Repayment' || t.loanId) {
+      return;
+    }
+
     if (t.type === 'Money Received') {
       totalIncome += amt;
-    } else if (t.type === 'Loan Taken') {
-      // Loan taken brings money in
-      totalIncome += amt;
-      totalLoansTaken += amt;
     } else if (t.type === 'Expense') {
       totalExpenses += amt;
 
@@ -192,7 +208,7 @@ export function computeFilteredDashboardSummary(
       cur.count += 1;
       categoryMap.set(catId, cur);
     } else if (t.type === 'Money Paid') {
-      // Money Paid is an outflow
+      // General Money Paid is an outflow
       totalExpenses += amt;
       totalMoneyPaid += amt;
 
@@ -202,11 +218,8 @@ export function computeFilteredDashboardSummary(
       cur.total += amt;
       cur.count += 1;
       categoryMap.set(catId, cur);
-    } else if (t.type === 'Loan Given') {
-      totalLoansGiven += amt;
     }
-    // Note: Credit Card Payment and Bank Transfer are intentionally NOT counted as expenses or income
-    // to avoid double counting.
+    // Note: Credit Card Payment is intentionally NOT counted as expenses or income
   });
 
   const categoryExpenses = Array.from(categoryMap.values()).sort((a, b) => b.total - a.total);

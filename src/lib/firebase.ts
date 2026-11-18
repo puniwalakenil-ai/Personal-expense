@@ -7,6 +7,7 @@ import {
   User,
   setPersistence,
   browserLocalPersistence,
+  browserPopupRedirectResolver,
 } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
@@ -102,4 +103,4 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
-export { signInWithPopup, signOut };
+export { signInWithPopup, signOut, browserPopupRedirectResolver };

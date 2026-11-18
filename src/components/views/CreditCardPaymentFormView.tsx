@@ -1,9 +1,13 @@
 import React, { useState } from 'react';
 import { CreditCard, Calendar, Landmark, Banknote, Check } from 'lucide-react';
 import { useFinancial } from '../../context/FinancialContext';
-import { PaymentMethod, PageView } from '../../types';
-import { getTodayDateString, formatCurrency } from '../../utils/formatters';
+import { useAuth } from '../../context/AuthContext';
+import { PaymentMethod, PageView, PendingAttachmentDraft, TransactionAttachmentMeta } from '../../types';
+import { getTodayDateString, formatCurrency, generateId } from '../../utils/formatters';
 import { InlineDropdown } from '../common/InlineDropdown';
+import { TechExpensesVideoLoader } from '../common/TechExpensesLogo';
+import { AttachmentPicker } from '../common/AttachmentPicker';
+import { savePendingAttachmentsToVault } from '../../services/attachmentService';
 
 interface Props {
   cardId: string;
@@ -20,6 +24,7 @@ export const CreditCardPaymentFormView: React.FC<Props> = ({ cardId, returnTo })
     goBack,
   } = useFinancial();
 
+  const { currentUser, isAuthorized } = useAuth();
   const card = creditCardsWithOutstanding.find((c) => c.id === cardId);
 
   const [amount, setAmount] = useState(card ? String(card.outstandingAmount || '') : '');
@@ -29,11 +34,15 @@ export const CreditCardPaymentFormView: React.FC<Props> = ({ cardId, returnTo })
     bankAccountsWithBalances.length > 0 ? bankAccountsWithBalances[0].id : ''
   );
   const [notes, setNotes] = useState('');
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachmentDraft[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<{ percent: number; label: string } | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    if (isSaving) return;
 
     if (!card) {
       setError('Credit card not found.');
@@ -51,26 +60,50 @@ export const CreditCardPaymentFormView: React.FC<Props> = ({ cardId, returnTo })
       return;
     }
 
-    recordCreditCardPayment(
-      card.id,
-      num,
-      paymentMethod,
-      paymentMethod === 'Bank Account' ? bankAccountId : undefined,
-      date,
-      notes.trim()
-    );
+    setIsSaving(true);
+    setUploadProgress(null);
+    const activeUserId = isAuthorized ? currentUser?.uid : null;
 
-    triggerSaveCelebration({
-      title: 'Entry Saved Successfully',
-      subtitle: `Paid ${formatCurrency(num)} for ${card.cardName}`,
-      amount: num,
-      direction: 'Money Out',
-    });
+    try {
+      const targetTxnId = generateId('ccpay');
+      let uploadedMetas: TransactionAttachmentMeta[] = [];
+      if (pendingAttachments.length > 0) {
+        uploadedMetas = await savePendingAttachmentsToVault({
+          userId: activeUserId,
+          transactionId: targetTxnId,
+          moduleType: 'credit-card',
+          accountScopeId: card.id,
+          drafts: pendingAttachments,
+          onProgress: (percent, label) => setUploadProgress({ percent, label }),
+        });
+      }
 
-    if (returnTo) {
-      navigateTo(returnTo);
-    } else {
-      navigateTo({ name: 'credit-card-detail', cardId: card.id });
+      recordCreditCardPayment(
+        card.id,
+        num,
+        paymentMethod,
+        paymentMethod === 'Bank Account' ? bankAccountId : undefined,
+        date,
+        notes.trim(),
+        { id: targetTxnId, attachments: uploadedMetas }
+      );
+
+      triggerSaveCelebration({
+        title: 'Entry Saved Successfully',
+        subtitle: `Paid ${formatCurrency(num)} for ${card.cardName}`,
+        amount: num,
+        direction: 'Money Out',
+      });
+
+      if (returnTo) {
+        navigateTo(returnTo);
+      } else {
+        navigateTo({ name: 'credit-card-detail', cardId: card.id });
+      }
+    } catch (err) {
+      setIsSaving(false);
+      setUploadProgress(null);
+      setError(err instanceof Error ? err.message : 'Failed to record bill payment. Please try again.');
     }
   };
 
@@ -204,6 +237,16 @@ export const CreditCardPaymentFormView: React.FC<Props> = ({ cardId, returnTo })
             />
           </div>
 
+          {/* Attach Section (PDF, Camera, Gallery) */}
+          <AttachmentPicker
+            pendingAttachments={pendingAttachments}
+            onAddPending={(drafts) => setPendingAttachments((prev) => [...prev, ...drafts])}
+            onRemovePending={(id) => setPendingAttachments((prev) => prev.filter((d) => d.id !== id))}
+            disabled={isSaving}
+            uploadProgress={uploadProgress}
+            accentColor="purple"
+          />
+
           <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
             <button
               type="button"
@@ -214,10 +257,11 @@ export const CreditCardPaymentFormView: React.FC<Props> = ({ cardId, returnTo })
             </button>
             <button
               type="submit"
-              className="inline-flex items-center gap-2 px-5 py-2 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-xl transition-colors shadow-xs cursor-pointer"
+              disabled={isSaving}
+              className="inline-flex items-center gap-2 px-5 py-2 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-xl transition-colors shadow-xs cursor-pointer disabled:opacity-70"
             >
-              <Check className="w-4 h-4" />
-              <span>Record Bill Payment</span>
+              {isSaving ? <TechExpensesVideoLoader size="xs" mode="loop" /> : <Check className="w-4 h-4" />}
+              <span>{isSaving ? 'Saving...' : 'Record Bill Payment'}</span>
             </button>
           </div>
         </form>

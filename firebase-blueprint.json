@@ -29,22 +29,31 @@
         "date": { "type": "string", "maxLength": 20 },
         "type": {
           "type": "string",
-          "enum": ["Expense", "Money Received", "Money Paid", "Credit Card Payment", "Loan Given", "Loan Taken", "Loan Repayment"]
+          "enum": ["Expense", "Money Received", "Money Paid", "Credit Card Payment", "Loan Given", "Loan Taken", "Loan Repayment", "ATM Withdrawal", "Adjustment"]
         },
         "title": { "type": "string", "maxLength": 150 },
         "narration": { "type": "string", "maxLength": 200 },
         "categoryId": { "type": "string", "maxLength": 128 },
         "categoryName": { "type": "string", "maxLength": 100 },
         "amount": { "type": "number" },
-        "paymentMethod": { "type": "string", "enum": ["Cash", "UPI", "Bank Account", "Credit Card"] },
+        "paymentMethod": { "type": "string", "enum": ["Cash", "UPI", "Bank Account", "Credit Card", "Adjustment"] },
         "bankAccountId": { "type": "string", "maxLength": 128 },
         "bankAccountName": { "type": "string", "maxLength": 100 },
         "creditCardId": { "type": "string", "maxLength": 128 },
         "creditCardName": { "type": "string", "maxLength": 100 },
         "upiId": { "type": "string", "maxLength": 100 },
         "loanId": { "type": "string", "maxLength": 128 },
+        "loanDirection": { "type": "string", "enum": ["Receivable", "Payable"] },
         "personName": { "type": "string", "maxLength": 100 },
         "notes": { "type": "string", "maxLength": 500 },
+        "attachments": { "type": "array" },
+        "linkedTransactionId": { "type": "string", "maxLength": 128 },
+        "transferGroupId": { "type": "string", "maxLength": 128 },
+        "isInternalTransfer": { "type": "boolean" },
+        "transferDirection": { "type": "string", "enum": ["in", "out"] },
+        "relatedBankAccountId": { "type": "string", "maxLength": 128 },
+        "relatedBankAccountName": { "type": "string", "maxLength": 100 },
+        "isAdjustment": { "type": "boolean" },
         "isDeleted": { "type": "boolean" },
         "deletedAt": { "type": "string", "maxLength": 50 },
         "createdAt": { "type": "string", "maxLength": 50 },
@@ -54,7 +63,7 @@
     },
     "Category": {
       "title": "Category",
-      "description": "Financial category for spending, income, capital, loan, or advance",
+      "description": "Financial category for spending, income, capital, loan & advance, or unsecured loan",
       "type": "object",
       "properties": {
         "id": { "type": "string", "maxLength": 128 },
@@ -88,20 +97,26 @@
     },
     "LoanEntry": {
       "title": "LoanEntry",
-      "description": "Loan given, loan taken, or advance",
+      "description": "Loan given, money owed, advance, or unsecured loan",
       "type": "object",
       "properties": {
         "id": { "type": "string", "maxLength": 128 },
         "personName": { "type": "string", "maxLength": 100 },
         "loanType": { "type": "string", "enum": ["Money Given", "Money Taken", "Secured Loan", "Unsecured Loan", "Loan & Advance"] },
+        "direction": { "type": "string", "enum": ["Receivable", "Payable"] },
+        "entryKind": { "type": "string", "enum": ["Money Given", "Money Owed", "Adjustment"] },
+        "reason": { "type": "string", "maxLength": 200 },
+        "categoryId": { "type": "string", "maxLength": 128 },
+        "categoryName": { "type": "string", "maxLength": 100 },
         "originalAmount": { "type": "number" },
         "settledAmount": { "type": "number" },
         "date": { "type": "string", "maxLength": 20 },
         "dueDate": { "type": "string", "maxLength": 20 },
         "notes": { "type": "string", "maxLength": 500 },
         "status": { "type": "string", "enum": ["Pending", "Partially Settled", "Settled"] },
-        "paymentMethod": { "type": "string", "enum": ["Cash", "UPI", "Bank Account", "Credit Card"] },
+        "paymentMethod": { "type": "string", "enum": ["Cash", "UPI", "Bank Account", "Credit Card", "Adjustment"] },
         "bankAccountId": { "type": "string", "maxLength": 128 },
+        "linkedTransactionId": { "type": "string", "maxLength": 128 },
         "repayments": { "type": "array" },
         "createdAt": { "type": "string", "maxLength": 50 },
         "updatedAt": { "type": "string", "maxLength": 50 }
@@ -145,6 +160,41 @@
         "savedExpenseDetails": { "type": "array" },
         "updatedAt": { "type": "string", "maxLength": 50 }
       }
+    },
+    "Attachment": {
+      "title": "Attachment",
+      "description": "Supporting PDF or photo receipt permanently linked to a specific transaction",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "transactionId": { "type": "string", "maxLength": 128 },
+        "moduleType": { "type": "string", "enum": ["bank", "cash", "credit-card"] },
+        "accountScopeId": { "type": "string", "maxLength": 128 },
+        "fileName": { "type": "string", "maxLength": 255 },
+        "mimeType": { "type": "string", "maxLength": 100 },
+        "fileSize": { "type": "number" },
+        "originalSize": { "type": "number" },
+        "sourceMethod": { "type": "string", "enum": ["pdf", "camera", "gallery"] },
+        "contentHash": { "type": "string", "maxLength": 128 },
+        "chunkCount": { "type": "number" },
+        "thumbnailDataUrl": { "type": "string", "maxLength": 80000 },
+        "createdAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["id", "transactionId", "moduleType", "fileName", "mimeType", "fileSize", "sourceMethod", "contentHash", "chunkCount", "createdAt"]
+    },
+    "AttachmentChunk": {
+      "title": "AttachmentChunk",
+      "description": "Chunked Base64 file slice belonging to an attachment record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 160 },
+        "attachmentId": { "type": "string", "maxLength": 128 },
+        "transactionId": { "type": "string", "maxLength": 128 },
+        "chunkIndex": { "type": "number" },
+        "data": { "type": "string", "maxLength": 400000 },
+        "createdAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["id", "attachmentId", "transactionId", "chunkIndex", "data"]
     }
   },
   "firestore": {
@@ -179,6 +229,14 @@
     "/users/{userId}/meta/settings": {
       "schema": "UserMeta",
       "description": "Global user balance and preferences"
+    },
+    "/users/{userId}/attachments/{attachmentId}": {
+      "schema": "Attachment",
+      "description": "Metadata for transaction receipt PDFs and images"
+    },
+    "/users/{userId}/attachmentChunks/{chunkId}": {
+      "schema": "AttachmentChunk",
+      "description": "Chunked file payload slices for transaction attachments"
     }
   }
 }

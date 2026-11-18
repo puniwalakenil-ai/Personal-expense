@@ -78,7 +78,12 @@ export const CategoryDetailView: React.FC<Props> = ({ categoryId, returnTo }) =>
       <div className="p-6 bg-slate-900 text-white rounded-2xl border border-slate-800 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <div className="inline-block text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-            Category Summary · {category.type}
+            Category Summary ·{' '}
+            {category.type === 'Loan'
+              ? 'Loan & Advance'
+              : category.type === 'Advance'
+              ? 'Unsecured Loan'
+              : category.type}
           </div>
           <h2 className="mt-1 text-2xl font-bold tracking-tight text-white">{category.name}</h2>
           <p className="text-xs text-slate-400 mt-0.5">
@@ -159,7 +164,10 @@ export const CategoryDetailView: React.FC<Props> = ({ categoryId, returnTo }) =>
           <div className="divide-y divide-slate-100">
             {categoryTransactions.map((txn) => {
               const isOutflow =
-                txn.type === 'Expense' || txn.type === 'Money Paid' || txn.type === 'Loan Given';
+                txn.type === 'Expense' ||
+                txn.type === 'Money Paid' ||
+                txn.type === 'Loan Given' ||
+                (txn.type === 'Loan Repayment' && txn.loanDirection === 'Payable');
               return (
                 <div
                   key={txn.id}
@@ -205,7 +213,13 @@ export const CategoryDetailView: React.FC<Props> = ({ categoryId, returnTo }) =>
           isOpen={isPdfModalOpen}
           onClose={() => setIsPdfModalOpen(false)}
           title={`${category.name} Category Ledger`}
-          subtitle={`Category Type: ${category.type} · ${categoryTransactions.length} Transactions`}
+          subtitle={`Category Type: ${
+            category.type === 'Loan'
+              ? 'Loan & Advance'
+              : category.type === 'Advance'
+              ? 'Unsecured Loan'
+              : category.type
+          } · ${categoryTransactions.length} Transactions`}
           ledgerType="category"
           transactions={categoryTransactions}
           baseOpeningBalance={0}

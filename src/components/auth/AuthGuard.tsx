@@ -1,22 +1,56 @@
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { Shield, Lock, ShieldAlert, LogOut, CheckCircle2, Smartphone, Laptop, Database } from 'lucide-react';
+import { Lock, ShieldAlert, LogOut, CheckCircle2, Smartphone, Laptop, Database } from 'lucide-react';
+import {
+  TechExpensesLogo,
+  TechExpensesVideoLoader,
+  TechExpensesLoadingScreen,
+} from '../common/TechExpensesLogo';
 
 export const AuthGuard: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { currentUser, isLoading, isSigningIn, isAuthorized, authorizedEmail, loginError, signInWithGoogle, logout, clearError } = useAuth();
 
-  if (isLoading) {
+  // Plays the complete 12.5s MP4 logo animation on app startup (website & Windows desktop)
+  const [startupAnimationDone, setStartupAnimationDone] = useState(false);
+
+  // Plays the complete 12.5s MP4 logo animation after interactive Google Sign-In before showing Dashboard
+  const [showPostLoginSplash, setShowPostLoginSplash] = useState(false);
+  const wasUnauthenticatedRef = useRef(false);
+
+  useEffect(() => {
+    if (!isLoading && !currentUser) {
+      wasUnauthenticatedRef.current = true;
+    } else if (!isLoading && currentUser && isAuthorized && wasUnauthenticatedRef.current) {
+      wasUnauthenticatedRef.current = false;
+      setShowPostLoginSplash(true);
+    }
+  }, [isLoading, currentUser, isAuthorized]);
+
+  if (!startupAnimationDone || isLoading) {
     return (
-      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-4">
-        <div className="w-16 h-16 relative flex items-center justify-center mb-6">
-          <div className="absolute inset-0 rounded-2xl bg-indigo-500/20 animate-ping" />
-          <div className="relative w-14 h-14 rounded-2xl bg-gradient-to-tr from-indigo-600 to-purple-600 flex items-center justify-center shadow-xl shadow-indigo-500/30">
-            <Lock className="w-7 h-7 text-white animate-pulse" />
-          </div>
-        </div>
-        <h2 className="text-lg font-bold text-white tracking-tight">Verifying Secure Identity</h2>
-        <p className="text-xs text-slate-400 mt-1">Connecting to private Cloud Firestore vault...</p>
-      </div>
+      <TechExpensesLoadingScreen
+        mode={startupAnimationDone ? 'loop' : 'play-once'}
+        variant="light"
+        title="Tech Expenses"
+        subtitle={
+          isLoading
+            ? 'Verifying secure identity & restoring session...'
+            : 'Preparing your personal finance workspace...'
+        }
+        onComplete={() => setStartupAnimationDone(true)}
+      />
+    );
+  }
+
+  if (showPostLoginSplash && currentUser && isAuthorized) {
+    return (
+      <TechExpensesLoadingScreen
+        mode="play-once"
+        variant="light"
+        title="Welcome to Tech Expenses"
+        subtitle="Syncing your dashboard, bank accounts & categories..."
+        onComplete={() => setShowPostLoginSplash(false)}
+      />
     );
   }
 
@@ -74,23 +108,20 @@ export const AuthGuard: React.FC<{ children: React.ReactNode }> = ({ children })
             <div className="absolute -top-32 -right-32 w-64 h-64 bg-indigo-600/15 rounded-full blur-3xl pointer-events-none" />
             <div className="absolute -bottom-32 -left-32 w-64 h-64 bg-purple-600/15 rounded-full blur-3xl pointer-events-none" />
 
-            {/* Header Icon */}
-            <div className="flex items-center justify-between mb-6">
-              <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-600 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-600/30">
-                <Shield className="w-6 h-6 text-white" />
+            {/* Brand Logo Header */}
+            <div className="flex items-center justify-between gap-3 mb-6">
+              <div className="bg-white rounded-2xl px-3.5 py-2 shadow-lg border border-slate-200/80">
+                <TechExpensesLogo variant="wordmark" className="h-8 sm:h-9 w-auto" />
               </div>
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[10px] font-bold text-emerald-400 uppercase tracking-wider">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[10px] font-bold text-emerald-400 uppercase tracking-wider shrink-0">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                 Zero-Trust Vault
               </span>
             </div>
 
-            {/* Title */}
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight mb-2">
-              Tech Expenses
-            </h1>
+            {/* Subtitle */}
             <p className="text-xs sm:text-sm text-slate-400 mb-6">
-              Private Personal Finance Vault with secure Cloud Firestore synchronization for iPhone and Laptop.
+              Private Personal Finance Vault with secure Cloud Firestore synchronization for mobile and Windows desktop.
             </p>
 
             {/* Single User Lock Badge */}
@@ -129,6 +160,13 @@ export const AuthGuard: React.FC<{ children: React.ReactNode }> = ({ children })
                     💡 <strong>Tip:</strong> Look for the popup blocked icon in your browser address bar and select "Always allow popups", then click Sign in with Google below.
                   </div>
                 )}
+                {(loginError.toLowerCase().includes('google authentication servers') ||
+                  loginError.toLowerCase().includes('offline') ||
+                  loginError.toLowerCase().includes('browser storage')) && (
+                  <div className="pt-2 border-t border-rose-500/20 text-[11px] text-slate-300">
+                    💡 <strong>Tip:</strong> Ensure your internet connection is active, allow popups and site cookies, and temporarily pause aggressive ad/tracker blockers (e.g., Brave Shields / uBlock) if they block Google Auth APIs, then try again.
+                  </div>
+                )}
               </div>
             )}
 
@@ -137,11 +175,11 @@ export const AuthGuard: React.FC<{ children: React.ReactNode }> = ({ children })
               type="button"
               onClick={signInWithGoogle}
               disabled={isSigningIn}
-              className="w-full inline-flex items-center justify-center gap-3 py-3.5 px-5 rounded-2xl font-bold text-sm bg-white hover:bg-slate-100 text-slate-900 transition-all shadow-xl shadow-white/5 cursor-pointer active:scale-[0.99] disabled:opacity-60 disabled:cursor-not-allowed"
+              className="w-full inline-flex items-center justify-center gap-3 py-3.5 px-5 rounded-2xl font-bold text-sm bg-white hover:bg-slate-100 text-slate-900 transition-all shadow-xl shadow-white/5 cursor-pointer active:scale-[0.99] disabled:opacity-80 disabled:cursor-not-allowed"
             >
               {isSigningIn ? (
-                <div className="flex items-center gap-2 text-slate-900">
-                  <div className="w-4 h-4 border-2 border-slate-900 border-t-transparent rounded-full animate-spin" />
+                <div className="flex items-center gap-2.5 text-slate-900">
+                  <TechExpensesVideoLoader size="xs" mode="loop" />
                   <span>Connecting to Google...</span>
                 </div>
               ) : (

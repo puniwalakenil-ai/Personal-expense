@@ -73,6 +73,65 @@ service cloud.firestore {
         allow get, list: if isAuthorizedOwner(userId);
         allow create, update, delete: if isAuthorizedOwner(userId) && isValidId(metaDoc);
       }
+
+      function isValidAttachment(data) {
+        return data.keys().hasAll([
+            'id', 'transactionId', 'moduleType', 'fileName', 'mimeType',
+            'fileSize', 'sourceMethod', 'contentHash', 'chunkCount', 'createdAt'
+          ])
+          && data.keys().hasOnly([
+            'id', 'transactionId', 'moduleType', 'accountScopeId', 'fileName',
+            'mimeType', 'fileSize', 'originalSize', 'sourceMethod', 'contentHash',
+            'chunkCount', 'thumbnailDataUrl', 'createdAt'
+          ])
+          && isValidId(data.id)
+          && isValidId(data.transactionId)
+          && data.moduleType in ['bank', 'cash', 'credit-card']
+          && (!('accountScopeId' in data) || (data.accountScopeId is string && data.accountScopeId.size() <= 128))
+          && data.fileName is string && data.fileName.size() > 0 && data.fileName.size() <= 255
+          && data.mimeType is string && data.mimeType in [
+            'application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/heic', 'image/heif'
+          ]
+          && data.fileSize is number && data.fileSize > 0 && data.fileSize <= 10485760
+          && (!('originalSize' in data) || (data.originalSize is number && data.originalSize > 0 && data.originalSize <= 52428800))
+          && data.sourceMethod in ['pdf', 'camera', 'gallery']
+          && data.contentHash is string && data.contentHash.size() > 0 && data.contentHash.size() <= 128
+          && data.chunkCount is number && data.chunkCount >= 1 && data.chunkCount <= 80
+          && (!('thumbnailDataUrl' in data) || (data.thumbnailDataUrl is string && data.thumbnailDataUrl.size() <= 80000))
+          && data.createdAt is string && data.createdAt.size() <= 50;
+      }
+
+      function isValidAttachmentChunk(data) {
+        return data.keys().hasAll(['id', 'attachmentId', 'transactionId', 'chunkIndex', 'data'])
+          && data.keys().hasOnly(['id', 'attachmentId', 'transactionId', 'chunkIndex', 'data', 'createdAt'])
+          && data.id is string && data.id.size() > 0 && data.id.size() <= 160 && data.id.matches('^[a-zA-Z0-9_\\-]+$')
+          && isValidId(data.attachmentId)
+          && isValidId(data.transactionId)
+          && data.chunkIndex is number && data.chunkIndex >= 0 && data.chunkIndex < 80
+          && data.data is string && data.data.size() > 0 && data.data.size() <= 400000
+          && (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 50));
+      }
+
+      // Transaction Attachment Metadata
+      match /attachments/{attachmentId} {
+        allow get, list: if isAuthorizedOwner(userId);
+        allow create, update: if isAuthorizedOwner(userId)
+          && isValidId(attachmentId)
+          && isValidAttachment(request.resource.data)
+          && request.resource.data.id == attachmentId;
+        allow delete: if isAuthorizedOwner(userId) && isValidId(attachmentId);
+      }
+
+      // Chunked Binary Payloads for Transaction Attachments
+      match /attachmentChunks/{chunkId} {
+        allow get, list: if isAuthorizedOwner(userId);
+        allow create, update: if isAuthorizedOwner(userId)
+          && chunkId is string && chunkId.size() > 0 && chunkId.size() <= 160 && chunkId.matches('^[a-zA-Z0-9_\\-]+$')
+          && isValidAttachmentChunk(request.resource.data)
+          && request.resource.data.id == chunkId;
+        allow delete: if isAuthorizedOwner(userId)
+          && chunkId is string && chunkId.size() > 0 && chunkId.size() <= 160 && chunkId.matches('^[a-zA-Z0-9_\\-]+$');
+      }
     }
   }
 }

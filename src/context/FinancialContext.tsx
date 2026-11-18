@@ -4,6 +4,7 @@ import {
   BankAccount,
   CreditCard,
   LoanEntry,
+  LoanDirection,
   UpiAccount,
   Transaction,
   NavSection,
@@ -11,7 +12,9 @@ import {
   PaymentMethod,
   ExpenseItemName,
   CreditCardBillStatus,
+  TransactionAttachmentMeta,
 } from '../types';
+import { deleteAttachmentsFromVault } from '../services/attachmentService';
 import {
   defaultPersonalCategories,
   initialCategories,
@@ -38,6 +41,22 @@ import {
 } from 'firebase/firestore';
 
 const STORAGE_KEY = 'tech_expenses_finance_v1';
+const LOAN_CATEGORY_MIGRATION_FLAG = 'tech_expenses_loan_cat_migrated_v1';
+const LOAN_CATEGORY_BACKUP_KEY = `${STORAGE_KEY}_backup_pre_loan_cat_migration_v1`;
+
+/**
+ * Resolves the canonical direction (Receivable = Who owes me / Payable = Whom I owe)
+ * for both legacy and new Loan & Advance / Unsecured Loan records.
+ */
+export const getLoanDirection = (loan: Pick<LoanEntry, 'direction' | 'loanType'>): LoanDirection => {
+  if (loan.direction === 'Receivable' || loan.direction === 'Payable') {
+    return loan.direction;
+  }
+  if (loan.loanType === 'Money Given' || loan.loanType === 'Loan & Advance') {
+    return 'Receivable';
+  }
+  return 'Payable';
+};
 
 export interface UpcomingBillReminder {
   cardId: string;
@@ -132,7 +151,7 @@ interface FinancialContextType {
     notes?: string;
   }) => Transaction;
 
-  addTransaction: (data: Omit<Transaction, 'id' | 'createdAt'>) => Transaction;
+  addTransaction: (data: Omit<Transaction, 'id' | 'createdAt'> & { id?: string }) => Transaction;
 
   updateTransaction: (id: string, updates: Partial<Transaction>) => void;
   deleteTransaction: (id: string) => void;
@@ -179,12 +198,41 @@ interface FinancialContextType {
   addCreditCard: (data: Omit<CreditCard, 'id' | 'createdAt' | 'outstandingAmount'>) => CreditCard;
   updateCreditCard: (id: string, updates: Partial<CreditCard>) => void;
   deleteCreditCard: (id: string) => void;
-  recordCreditCardPayment: (cardId: string, amount: number, paymentMethod: PaymentMethod, bankAccountId?: string, date?: string, notes?: string) => void;
+  recordCreditCardPayment: (
+    cardId: string,
+    amount: number,
+    paymentMethod: PaymentMethod,
+    bankAccountId?: string,
+    date?: string,
+    notes?: string,
+    options?: { id?: string; attachments?: TransactionAttachmentMeta[] }
+  ) => void;
 
   addLoan: (data: Omit<LoanEntry, 'id' | 'createdAt' | 'settledAmount' | 'status' | 'repayments'>) => LoanEntry;
   updateLoan: (id: string, updates: Partial<LoanEntry>) => void;
   deleteLoan: (id: string) => void;
   recordLoanRepayment: (loanId: string, amount: number, paymentMethod: PaymentMethod, bankAccountId?: string, date?: string, notes?: string) => void;
+  recordPersonSettlement: (data: {
+    personName: string;
+    direction: LoanDirection;
+    amount: number;
+    paymentMethod: PaymentMethod;
+    bankAccountId?: string;
+    date?: string;
+    notes?: string;
+    loanId?: string;
+  }) => void;
+
+  recordAtmWithdrawal: (data: {
+    bankAccountId: string;
+    amount: number;
+    date: string;
+    notes?: string;
+    bankTxnId?: string;
+    cashTxnId?: string;
+    attachments?: TransactionAttachmentMeta[];
+    attachmentOwner?: 'bank' | 'cash';
+  }) => { bankTxn: Transaction; cashTxn: Transaction } | null;
 
   addUpiAccount: (data: Omit<UpiAccount, 'id' | 'createdAt'>) => UpiAccount;
   updateUpiAccount: (id: string, updates: Partial<UpiAccount>) => void;
@@ -203,6 +251,7 @@ interface FinancialContextType {
   };
   requestDelete: (itemType: string, itemId: string, itemTitle: string, onConfirm: () => void) => void;
   confirmDelete: () => void;
+  completeDelete: () => void;
   cancelDelete: () => void;
 
   // Save Success Feedback (Requirement 19)
@@ -351,24 +400,74 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     }
   }, [savedItemNames]);
 
+  // Safe in-place migration: rename "Loan" -> "Loan & Advance" and "Advance" -> "Unsecured Loan"
+  // Preserves all existing document IDs, transactions, loans, and creates a local backup first.
+  const applySafeLoanCategoryMigration = (sourceCats: Category[]): {
+    updatedCats: Category[];
+    changedCats: Category[];
+    renamedIds: Map<string, string>;
+  } => {
+    const hasLoanAdvance = sourceCats.some((c) => normalizeCategoryName(c.name) === 'loan & advance');
+    const hasUnsecuredLoan = sourceCats.some((c) => normalizeCategoryName(c.name) === 'unsecured loan');
+
+    const renamedIds = new Map<string, string>();
+    const changedCats: Category[] = [];
+
+    const updatedCats = sourceCats.map((cat) => {
+      const norm = normalizeCategoryName(cat.name);
+      if (norm === 'loan' && !hasLoanAdvance) {
+        const nextCat: Category = { ...cat, name: 'Loan & Advance', type: cat.type === 'Loan' ? 'Loan' : cat.type };
+        renamedIds.set(cat.id, nextCat.name);
+        changedCats.push(nextCat);
+        return nextCat;
+      }
+      if (norm === 'advance' && !hasUnsecuredLoan) {
+        const nextCat: Category = { ...cat, name: 'Unsecured Loan', type: cat.type === 'Advance' ? 'Advance' : cat.type };
+        renamedIds.set(cat.id, nextCat.name);
+        changedCats.push(nextCat);
+        return nextCat;
+      }
+      return cat;
+    });
+
+    return { updatedCats, changedCats, renamedIds };
+  };
+
   // Data healing effect: guarantees transactions & saved names link to canonical category IDs
+  // and safely renames legacy "Loan" -> "Loan & Advance" & "Advance" -> "Unsecured Loan"
   useEffect(() => {
     try {
       const saved = localStorage.getItem(`${STORAGE_KEY}_categories`);
       if (saved) {
         const parsed: Category[] = JSON.parse(saved);
         const { uniqueCategories, remap } = deduplicateCategoryList(parsed);
-        if (remap.size > 0 || uniqueCategories.length !== parsed.length) {
-          setCategories(uniqueCategories);
+        const { updatedCats, renamedIds } = applySafeLoanCategoryMigration(uniqueCategories);
+
+        if (renamedIds.size > 0 && !localStorage.getItem(LOAN_CATEGORY_BACKUP_KEY)) {
+          localStorage.setItem(
+            LOAN_CATEGORY_BACKUP_KEY,
+            JSON.stringify({
+              timestamp: new Date().toISOString(),
+              categories: parsed,
+              transactions,
+              loans,
+              savedItemNames,
+            })
+          );
+        }
+
+        if (remap.size > 0 || uniqueCategories.length !== parsed.length || renamedIds.size > 0) {
+          setCategories(updatedCats);
+          localStorage.setItem(`${STORAGE_KEY}_categories`, JSON.stringify(updatedCats));
           setTransactions((prev) =>
             prev.map((t) => {
-              if (t.categoryId && remap.has(t.categoryId)) {
-                const canonicalId = remap.get(t.categoryId)!;
-                const cat = uniqueCategories.find((c) => c.id === canonicalId);
+              const targetCatId = (t.categoryId && remap.get(t.categoryId)) || t.categoryId;
+              const cat = updatedCats.find((c) => c.id === targetCatId);
+              if (cat && ((t.categoryId && remap.has(t.categoryId)) || (targetCatId && renamedIds.has(targetCatId)))) {
                 return {
                   ...t,
-                  categoryId: canonicalId,
-                  categoryName: cat?.name || t.categoryName,
+                  categoryId: cat.id,
+                  categoryName: cat.name,
                 };
               }
               return t;
@@ -376,19 +475,20 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
           );
           setSavedItemNames((prev) =>
             prev.map((item) => {
-              if (item.categoryId && remap.has(item.categoryId)) {
-                const canonicalId = remap.get(item.categoryId)!;
-                const cat = uniqueCategories.find((c) => c.id === canonicalId);
+              const targetCatId = (item.categoryId && remap.get(item.categoryId)) || item.categoryId;
+              const cat = updatedCats.find((c) => c.id === targetCatId);
+              if (cat && ((item.categoryId && remap.has(item.categoryId)) || (targetCatId && renamedIds.has(targetCatId)))) {
                 return {
                   ...item,
-                  categoryId: canonicalId,
-                  categoryName: cat?.name || item.categoryName,
+                  categoryId: cat.id,
+                  categoryName: cat.name,
                 };
               }
               return item;
             })
           );
         }
+        localStorage.setItem(LOAN_CATEGORY_MIGRATION_FLAG, '1');
       }
     } catch (e) {
       console.error(e);
@@ -652,10 +752,46 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
             } as Category);
           });
           const { uniqueCategories } = deduplicateCategoryList(cloudCats);
-          if (uniqueCategories.length > 0) {
-            setCategories(uniqueCategories);
+          const { updatedCats, changedCats, renamedIds } = applySafeLoanCategoryMigration(uniqueCategories);
+
+          // Persist any safe in-place category renames ("Loan" -> "Loan & Advance", "Advance" -> "Unsecured Loan")
+          if (changedCats.length > 0) {
             try {
-              localStorage.setItem(`${STORAGE_KEY}_categories`, JSON.stringify(uniqueCategories));
+              if (!localStorage.getItem(LOAN_CATEGORY_BACKUP_KEY)) {
+                localStorage.setItem(
+                  LOAN_CATEGORY_BACKUP_KEY,
+                  JSON.stringify({
+                    timestamp: new Date().toISOString(),
+                    categories: cloudCats,
+                  })
+                );
+              }
+              const migrateBatch = writeBatch(db);
+              changedCats.forEach((cat) => {
+                migrateBatch.set(doc(db, 'users', userId, 'categories', cat.id), sanitizeForFirestore(cat), { merge: true });
+              });
+              // Also sync categoryName on linked cloud transactions
+              const txSnap = await getDocs(collection(db, 'users', userId, 'transactions'));
+              txSnap.docs.forEach((txDoc) => {
+                const txData = txDoc.data() as Transaction;
+                if (txData.categoryId && renamedIds.has(txData.categoryId)) {
+                  migrateBatch.set(
+                    doc(db, 'users', userId, 'transactions', txDoc.id),
+                    { categoryName: renamedIds.get(txData.categoryId) },
+                    { merge: true }
+                  );
+                }
+              });
+              await migrateBatch.commit();
+            } catch (migErr) {
+              console.error('Safe category rename migration error:', migErr);
+            }
+          }
+
+          if (updatedCats.length > 0) {
+            setCategories(updatedCats);
+            try {
+              localStorage.setItem(`${STORAGE_KEY}_categories`, JSON.stringify(updatedCats));
             } catch {}
           }
         } else {
@@ -663,7 +799,7 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
           // Check if local storage or memory has categories; otherwise seed baseline default categories
           let catsToSeed: Category[] = [];
           if (categories.length > 0) {
-            catsToSeed = categories;
+            catsToSeed = applySafeLoanCategoryMigration(categories).updatedCats;
           } else {
             const baseline = [
               { name: 'Home & Expenses', type: 'Expense' as const, color: '#4f46e5' },
@@ -678,6 +814,8 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
               { name: 'Freelance & Business', type: 'Income' as const, color: '#2563eb' },
               { name: 'Investments & Returns', type: 'Income' as const, color: '#16a34a' },
               { name: 'Gifts & Cashback', type: 'Income' as const, color: '#eab308' },
+              { name: 'Loan & Advance', type: 'Loan' as const, color: '#2563eb' },
+              { name: 'Unsecured Loan', type: 'Advance' as const, color: '#7c3aed' },
             ];
             catsToSeed = baseline.map((b) => ({
               id: generateId('cat'),
@@ -920,12 +1058,13 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
 
   const activeSection: NavSection = useMemo(() => {
     if (pageView.name === 'section') return pageView.section;
+    if (pageView.name.startsWith('cash') || pageView.name.startsWith('atm')) return 'Cash';
     if (pageView.name.startsWith('expense')) return 'Expenses';
     if (pageView.name.startsWith('money-received')) return 'Money Received';
     if (pageView.name.startsWith('money-paid')) return 'Money Paid';
     if (pageView.name.startsWith('bank')) return 'Bank Accounts';
     if (pageView.name.startsWith('credit-card')) return 'Credit Cards';
-    if (pageView.name.startsWith('loan')) return 'Loans & Advances';
+    if (pageView.name.startsWith('loan') || pageView.name.startsWith('person-loan')) return 'Loans & Advances';
     if (pageView.name.startsWith('category')) return 'Categories';
     if (pageView.name.startsWith('upi')) return 'UPI';
     if (pageView.name.startsWith('entry')) return 'Entries';
@@ -951,41 +1090,57 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     [bankAccounts]
   );
 
-  // Dynamic Bank Balances
+  // Dynamic Bank Balances (single source of truth via transactions + non-duplicated legacy fallback)
   const bankAccountsWithBalances = useMemo(() => {
     return activeBankAccounts.map((bank) => {
       let balance = Number(bank.openingBalance) || 0;
 
       activeTransactions.forEach((txn) => {
-        if (txn.bankAccountId === bank.id) {
-          if (txn.type === 'Money Received' || txn.type === 'Loan Taken') {
-            balance += txn.amount;
-          } else if (
-            txn.type === 'Expense' ||
-            txn.type === 'Money Paid' ||
-            txn.type === 'Credit Card Payment' ||
-            txn.type === 'Loan Given'
-          ) {
-            balance -= txn.amount;
-          }
+        if (txn.bankAccountId !== bank.id) return;
+        if (txn.isAdjustment || txn.type === 'Adjustment' || txn.paymentMethod === 'Adjustment') return;
+
+        const amt = Number(txn.amount) || 0;
+        if (
+          txn.type === 'Money Received' ||
+          txn.type === 'Loan Taken' ||
+          (txn.type === 'Loan Repayment' && txn.loanDirection !== 'Payable') ||
+          (txn.type === 'ATM Withdrawal' && txn.transferDirection === 'in')
+        ) {
+          balance += amt;
+        } else if (
+          txn.type === 'Expense' ||
+          txn.type === 'Money Paid' ||
+          txn.type === 'Credit Card Payment' ||
+          txn.type === 'Loan Given' ||
+          (txn.type === 'Loan Repayment' && txn.loanDirection === 'Payable') ||
+          (txn.type === 'ATM Withdrawal' && txn.transferDirection !== 'in')
+        ) {
+          balance -= amt;
         }
       });
 
-      // Also check loan repayments received into this bank
+      // Fallback ONLY for legacy loan repayments that have no Transaction document
       loans.forEach((loan) => {
-        if (loan.repayments) {
-          loan.repayments.forEach((rep) => {
-            if (rep.bankAccountId === bank.id) {
-              if (loan.loanType === 'Money Given') {
-                // They repaid us -> Inflow
-                balance += rep.amount;
-              } else if (loan.loanType === 'Money Taken') {
-                // We repaid them -> Outflow
-                balance -= rep.amount;
-              }
-            }
-          });
-        }
+        const dir = getLoanDirection(loan);
+        (loan.repayments || []).forEach((rep) => {
+          if (rep.bankAccountId !== bank.id || rep.paymentMethod === 'Adjustment') return;
+          const alreadyTrackedAsTxn = transactions.some(
+            (t) =>
+              (rep.linkedTransactionId && t.id === rep.linkedTransactionId) ||
+              (t.loanId === loan.id &&
+                Number(t.amount) === Number(rep.amount) &&
+                t.date === rep.date &&
+                t.paymentMethod === rep.paymentMethod)
+          );
+          if (alreadyTrackedAsTxn) return;
+
+          const amt = Number(rep.amount) || 0;
+          if (dir === 'Receivable') {
+            balance += amt;
+          } else {
+            balance -= amt;
+          }
+        });
       });
 
       return {
@@ -993,46 +1148,62 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
         currentBalance: balance,
       };
     });
-  }, [activeBankAccounts, activeTransactions, loans]);
+  }, [activeBankAccounts, activeTransactions, transactions, loans]);
 
-  // Dynamic Cash Balance
+  // Dynamic Cash Balance (standalone Cash transactions only, never bank-linked Cheque/Direct entries)
   const currentCashBalance = useMemo(() => {
     let balance = Number(cashOpeningBalance) || 0;
 
     activeTransactions.forEach((txn) => {
-      if (txn.paymentMethod === 'Cash') {
-        if (txn.type === 'Money Received' || txn.type === 'Loan Taken') {
-          balance += txn.amount;
-        } else if (
-          txn.type === 'Expense' ||
-          txn.type === 'Money Paid' ||
-          txn.type === 'Credit Card Payment' ||
-          txn.type === 'Loan Given'
-        ) {
-          balance -= txn.amount;
-        }
+      if (txn.paymentMethod !== 'Cash' || txn.bankAccountId) return;
+      if (txn.isAdjustment || txn.type === 'Adjustment') return;
+
+      const amt = Number(txn.amount) || 0;
+      if (
+        txn.type === 'Money Received' ||
+        txn.type === 'Loan Taken' ||
+        (txn.type === 'Loan Repayment' && txn.loanDirection !== 'Payable') ||
+        (txn.type === 'ATM Withdrawal' && txn.transferDirection === 'in')
+      ) {
+        balance += amt;
+      } else if (
+        txn.type === 'Expense' ||
+        txn.type === 'Money Paid' ||
+        txn.type === 'Credit Card Payment' ||
+        txn.type === 'Loan Given' ||
+        (txn.type === 'Loan Repayment' && txn.loanDirection === 'Payable') ||
+        (txn.type === 'ATM Withdrawal' && txn.transferDirection !== 'in')
+      ) {
+        balance -= amt;
       }
     });
 
-    // Check loan repayments made in cash
+    // Fallback ONLY for legacy cash loan repayments that have no Transaction document
     loans.forEach((loan) => {
-      if (loan.repayments) {
-        loan.repayments.forEach((rep) => {
-          if (rep.paymentMethod === 'Cash') {
-            if (loan.loanType === 'Money Given') {
-              // Cash received from borrower
-              balance += rep.amount;
-            } else if (loan.loanType === 'Money Taken') {
-              // Cash paid to lender
-              balance -= rep.amount;
-            }
-          }
-        });
-      }
+      const dir = getLoanDirection(loan);
+      (loan.repayments || []).forEach((rep) => {
+        if (rep.paymentMethod !== 'Cash' || rep.bankAccountId) return;
+        const alreadyTrackedAsTxn = transactions.some(
+          (t) =>
+            (rep.linkedTransactionId && t.id === rep.linkedTransactionId) ||
+            (t.loanId === loan.id &&
+              Number(t.amount) === Number(rep.amount) &&
+              t.date === rep.date &&
+              t.paymentMethod === rep.paymentMethod)
+        );
+        if (alreadyTrackedAsTxn) return;
+
+        const amt = Number(rep.amount) || 0;
+        if (dir === 'Receivable') {
+          balance += amt;
+        } else {
+          balance -= amt;
+        }
+      });
     });
 
     return balance;
-  }, [cashOpeningBalance, activeTransactions, loans]);
+  }, [cashOpeningBalance, activeTransactions, transactions, loans]);
 
   // Dynamic Credit Card Outstanding & Automatic Billing Dates
   const creditCardsWithOutstanding = useMemo(() => {
@@ -1064,22 +1235,43 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     });
   }, [creditCards, activeTransactions]);
 
-  // Aggregates (using only active non-deleted transactions)
+  // Aggregates (excluding internal transfers, adjustments, and loan settlements from Income & Expense)
   const totalExpenses = useMemo(() => {
     return activeTransactions
-      .filter((t) => t.type === 'Expense')
+      .filter(
+        (t) =>
+          t.type === 'Expense' &&
+          !t.isInternalTransfer &&
+          !t.isAdjustment &&
+          t.paymentMethod !== 'Adjustment' &&
+          !t.loanId
+      )
       .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
   }, [activeTransactions]);
 
   const totalMoneyReceived = useMemo(() => {
     return activeTransactions
-      .filter((t) => t.type === 'Money Received')
+      .filter(
+        (t) =>
+          t.type === 'Money Received' &&
+          !t.isInternalTransfer &&
+          !t.isAdjustment &&
+          t.paymentMethod !== 'Adjustment' &&
+          !t.loanId
+      )
       .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
   }, [activeTransactions]);
 
   const totalMoneyPaid = useMemo(() => {
     return activeTransactions
-      .filter((t) => t.type === 'Money Paid')
+      .filter(
+        (t) =>
+          t.type === 'Money Paid' &&
+          !t.isInternalTransfer &&
+          !t.isAdjustment &&
+          t.paymentMethod !== 'Adjustment' &&
+          !t.loanId
+      )
       .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
   }, [activeTransactions]);
 
@@ -1091,16 +1283,16 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     return creditCardsWithOutstanding.reduce((sum, c) => sum + c.outstandingAmount, 0);
   }, [creditCardsWithOutstanding]);
 
-  // Loans: Money Given (Who owes me) vs Money Taken (Whom I owe)
+  // Loans: Receivable (Who owes me) vs Payable (Whom I owe)
   const totalLoansGivenPending = useMemo(() => {
     return loans
-      .filter((l) => l.loanType === 'Money Given' || l.loanType === 'Loan & Advance')
+      .filter((l) => getLoanDirection(l) === 'Receivable')
       .reduce((sum, l) => sum + Math.max(0, l.originalAmount - (l.settledAmount || 0)), 0);
   }, [loans]);
 
   const totalLoansTakenPending = useMemo(() => {
     return loans
-      .filter((l) => l.loanType === 'Money Taken' || l.loanType === 'Secured Loan' || l.loanType === 'Unsecured Loan')
+      .filter((l) => getLoanDirection(l) === 'Payable')
       .reduce((sum, l) => sum + Math.max(0, l.originalAmount - (l.settledAmount || 0)), 0);
   }, [loans]);
 
@@ -1172,7 +1364,14 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     const map = new Map<string, { categoryId: string; categoryName: string; total: number; count: number }>();
 
     activeTransactions
-      .filter((t) => t.type === 'Expense')
+      .filter(
+        (t) =>
+          t.type === 'Expense' &&
+          !t.isInternalTransfer &&
+          !t.isAdjustment &&
+          t.paymentMethod !== 'Adjustment' &&
+          !t.loanId
+      )
       .forEach((t) => {
         // Resolve canonical category by ID first, then by normalized name
         let matchedCat = categories.find((c) => c.id === t.categoryId);
@@ -1312,14 +1511,14 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     return newTxn;
   };
 
-  const addTransaction = (data: Omit<Transaction, 'id' | 'createdAt'>): Transaction => {
+  const addTransaction = (data: Omit<Transaction, 'id' | 'createdAt'> & { id?: string }): Transaction => {
     const category = data.categoryId ? categories.find((c) => c.id === data.categoryId) : undefined;
     const bank = data.bankAccountId ? bankAccounts.find((b) => b.id === data.bankAccountId) : undefined;
     const card = data.creditCardId ? creditCards.find((c) => c.id === data.creditCardId) : undefined;
 
     const newTxn: Transaction = {
       ...data,
-      id: generateId(data.type === 'Money Received' ? 'rec' : 'exp'),
+      id: data.id || generateId(data.type === 'Money Received' ? 'rec' : 'exp'),
       date: data.date || getTodayDateString(),
       title: data.title.trim(),
       categoryName: data.categoryName || category?.name || (data.type === 'Expense' ? 'General Expense' : undefined),
@@ -1358,26 +1557,89 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     showSuccessFeedback('Successfully Updated', 'Transaction updated');
   };
 
-  // Requirement 2: Soft Deletion and Dedicated Recycle Bin
+  // Requirement 2: Soft Deletion and Dedicated Recycle Bin (cascades atomically to linked transfers)
+  const getLinkedTransactionIds = (id: string): string[] => {
+    const target = transactions.find((t) => t.id === id);
+    const ids = new Set<string>([id]);
+    if (target?.linkedTransactionId) {
+      ids.add(target.linkedTransactionId);
+    }
+    transactions.forEach((t) => {
+      if (t.linkedTransactionId === id) {
+        ids.add(t.id);
+      }
+    });
+    return Array.from(ids);
+  };
+
   const softDeleteTransaction = (id: string) => {
+    const ids = getLinkedTransactionIds(id);
+    const idSet = new Set(ids);
+    const deletedAt = new Date().toISOString();
+
     setTransactions((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, isDeleted: true, deletedAt: new Date().toISOString() } : t))
+      prev.map((t) => (idSet.has(t.id) ? { ...t, isDeleted: true, deletedAt } : t))
     );
-    persistDoc('transactions', id, { isDeleted: true, deletedAt: new Date().toISOString() }, true);
-    showSuccessFeedback('Moved to Recycle Bin', 'Transaction can be restored anytime');
+
+    if (isAuthorized && currentUser?.uid) {
+      const batch = writeBatch(db);
+      ids.forEach((docId) => {
+        batch.set(
+          doc(db, 'users', currentUser.uid, 'transactions', docId),
+          { isDeleted: true, deletedAt },
+          { merge: true }
+        );
+      });
+      batch.commit().catch((err) => handleFirestoreError(err, OperationType.UPDATE, `users/${currentUser.uid}/transactions/${id}`));
+    }
+    showSuccessFeedback('Moved to Recycle Bin', ids.length > 1 ? 'Linked transfer entries moved to Recycle Bin' : 'Transaction can be restored anytime');
   };
 
   const restoreTransaction = (id: string) => {
+    const ids = getLinkedTransactionIds(id);
+    const idSet = new Set(ids);
+
     setTransactions((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, isDeleted: false, deletedAt: undefined } : t))
+      prev.map((t) => (idSet.has(t.id) ? { ...t, isDeleted: false, deletedAt: undefined } : t))
     );
-    persistDoc('transactions', id, { isDeleted: false, deletedAt: null }, true);
-    showSuccessFeedback('Restored Successfully', 'Transaction restored to active passbook');
+
+    if (isAuthorized && currentUser?.uid) {
+      const batch = writeBatch(db);
+      ids.forEach((docId) => {
+        batch.set(
+          doc(db, 'users', currentUser.uid, 'transactions', docId),
+          { isDeleted: false, deletedAt: null },
+          { merge: true }
+        );
+      });
+      batch.commit().catch((err) => handleFirestoreError(err, OperationType.UPDATE, `users/${currentUser.uid}/transactions/${id}`));
+    }
+    showSuccessFeedback('Restored Successfully', ids.length > 1 ? 'Linked transfer entries restored' : 'Transaction restored to active passbook');
   };
 
   const permanentlyDeleteTransaction = (id: string) => {
-    setTransactions((prev) => prev.filter((t) => t.id !== id));
-    deleteFirestoreDoc('transactions', id);
+    const ids = getLinkedTransactionIds(id);
+    const idSet = new Set(ids);
+    const purgedAttachments = transactions
+      .filter((t) => idSet.has(t.id) && t.attachments && t.attachments.length > 0)
+      .flatMap((t) => t.attachments || []);
+
+    setTransactions((prev) => prev.filter((t) => !idSet.has(t.id)));
+
+    if (purgedAttachments.length > 0) {
+      deleteAttachmentsFromVault({
+        userId: isAuthorized ? currentUser?.uid : null,
+        attachments: purgedAttachments,
+      }).catch((err) => console.error('Failed to purge attachment chunks:', err));
+    }
+
+    if (isAuthorized && currentUser?.uid) {
+      const batch = writeBatch(db);
+      ids.forEach((docId) => {
+        batch.delete(doc(db, 'users', currentUser.uid, 'transactions', docId));
+      });
+      batch.commit().catch((err) => handleFirestoreError(err, OperationType.DELETE, `users/${currentUser.uid}/transactions/${id}`));
+    }
     showSuccessFeedback('Permanently Deleted', 'Transaction purged from Recycle Bin');
   };
 
@@ -1499,6 +1761,13 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
   };
 
   const emptyRecycleBin = () => {
+    const purgedAttachments = deletedTransactions.flatMap((t) => t.attachments || []);
+    if (purgedAttachments.length > 0) {
+      deleteAttachmentsFromVault({
+        userId: isAuthorized ? currentUser?.uid : null,
+        attachments: purgedAttachments,
+      }).catch((err) => console.error('Failed to purge attachment chunks:', err));
+    }
     deletedTransactions.forEach((t) => deleteFirestoreDoc('transactions', t.id));
     deletedBankAccounts.forEach((b) => deleteFirestoreDoc('bankAccounts', b.id));
     setTransactions((prev) => prev.filter((t) => !t.isDeleted));
@@ -1546,13 +1815,14 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     paymentMethod: PaymentMethod,
     bankAccountId?: string,
     date?: string,
-    notes?: string
+    notes?: string,
+    options?: { id?: string; attachments?: TransactionAttachmentMeta[] }
   ) => {
     const card = creditCards.find((c) => c.id === cardId);
     const bank = bankAccounts.find((b) => b.id === bankAccountId);
 
     const paymentTxn: Transaction = {
-      id: generateId('ccpay'),
+      id: options?.id || generateId('ccpay'),
       date: date || getTodayDateString(),
       type: 'Credit Card Payment',
       title: `Bill Payment - ${card?.cardName || 'Credit Card'}`,
@@ -1564,6 +1834,7 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
       creditCardId: cardId,
       creditCardName: card?.cardName,
       notes: notes?.trim() || undefined,
+      ...(options?.attachments && options.attachments.length > 0 ? { attachments: options.attachments } : {}),
       createdAt: new Date().toISOString(),
     };
 
@@ -1572,52 +1843,185 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     showSuccessFeedback('Successfully Saved', `Credit card payment of ${formatCurrency(amount)} recorded`);
   };
 
+  // Requirement 2: ATM Cash Withdrawal with Automatic Bank Linking (Internal Transfer - not income or expense)
+  const recordAtmWithdrawal = (data: {
+    bankAccountId: string;
+    amount: number;
+    date: string;
+    notes?: string;
+    bankTxnId?: string;
+    cashTxnId?: string;
+    attachments?: TransactionAttachmentMeta[];
+    attachmentOwner?: 'bank' | 'cash';
+  }): { bankTxn: Transaction; cashTxn: Transaction } | null => {
+    const bank = bankAccounts.find((b) => b.id === data.bankAccountId);
+    const numAmount = Number(data.amount);
+    if (!bank || isNaN(numAmount) || numAmount <= 0) return null;
+
+    const transferGroupId = generateId('atmgrp');
+    const bankTxId = data.bankTxnId || generateId('atmbank');
+    const cashTxId = data.cashTxnId || generateId('atmcash');
+    const txnDate = data.date || getTodayDateString();
+    const nowIso = new Date().toISOString();
+    const cleanNotes = data.notes?.trim() || undefined;
+    const owner = data.attachmentOwner || 'bank';
+
+    const bankTxn: Transaction = {
+      id: bankTxId,
+      date: txnDate,
+      type: 'ATM Withdrawal',
+      title: 'ATM Cash Withdrawal',
+      narration: `Cash transferred to Cash-in-Hand`,
+      categoryName: 'Internal Transfer',
+      amount: numAmount,
+      paymentMethod: 'Bank Account',
+      bankAccountId: bank.id,
+      bankAccountName: bank.bankName,
+      isInternalTransfer: true,
+      transferDirection: 'out',
+      linkedTransactionId: cashTxId,
+      transferGroupId,
+      notes: cleanNotes,
+      ...(owner === 'bank' && data.attachments && data.attachments.length > 0
+        ? { attachments: data.attachments }
+        : {}),
+      createdAt: nowIso,
+    };
+
+    const cashTxn: Transaction = {
+      id: cashTxId,
+      date: txnDate,
+      type: 'ATM Withdrawal',
+      title: `ATM Withdrawal (${bank.bankName})`,
+      narration: `Withdrawn via ATM from ${bank.bankName}`,
+      categoryName: 'Internal Transfer',
+      amount: numAmount,
+      paymentMethod: 'Cash',
+      relatedBankAccountId: bank.id,
+      relatedBankAccountName: bank.bankName,
+      isInternalTransfer: true,
+      transferDirection: 'in',
+      linkedTransactionId: bankTxId,
+      transferGroupId,
+      notes: cleanNotes,
+      ...(owner === 'cash' && data.attachments && data.attachments.length > 0
+        ? { attachments: data.attachments }
+        : {}),
+      createdAt: nowIso,
+    };
+
+    setTransactions((prev) => [cashTxn, bankTxn, ...prev]);
+
+    if (isAuthorized && currentUser?.uid) {
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'users', currentUser.uid, 'transactions', bankTxn.id), sanitizeForFirestore(bankTxn));
+      batch.set(doc(db, 'users', currentUser.uid, 'transactions', cashTxn.id), sanitizeForFirestore(cashTxn));
+      batch.commit().catch((err) =>
+        handleFirestoreError(err, OperationType.CREATE, `users/${currentUser.uid}/transactions/${transferGroupId}`)
+      );
+    }
+
+    showSuccessFeedback(
+      'ATM Withdrawal Saved',
+      `${formatCurrency(numAmount)} moved from ${bank.bankName} to Cash-in-Hand`
+    );
+    return { bankTxn, cashTxn };
+  };
+
   const addLoan = (data: Omit<LoanEntry, 'id' | 'createdAt' | 'settledAmount' | 'status' | 'repayments'>): LoanEntry => {
+    const resolvedDirection = getLoanDirection({ direction: data.direction, loanType: data.loanType });
+    const resolvedEntryKind =
+      data.entryKind || (resolvedDirection === 'Receivable' ? 'Money Given' : 'Money Owed');
+    const resolvedPaymentMethod: PaymentMethod = data.paymentMethod || (resolvedEntryKind === 'Money Owed' ? 'Adjustment' : 'Cash');
+    const bank = bankAccounts.find((b) => b.id === data.bankAccountId);
+    const shouldAffectCashOrBank =
+      resolvedPaymentMethod !== 'Adjustment' &&
+      resolvedEntryKind !== 'Money Owed' &&
+      (resolvedPaymentMethod === 'Cash' || resolvedPaymentMethod === 'Bank Account' || resolvedPaymentMethod === 'UPI');
+
+    const newLoanId = generateId('loan');
+    const txnId = shouldAffectCashOrBank ? generateId('loantxn') : undefined;
+    const resolvedCat =
+      (data.categoryId && categories.find((c) => c.id === data.categoryId)) ||
+      categories.find((c) => normalizeCategoryName(c.name) === normalizeCategoryName(data.loanType));
+
     const newLoan: LoanEntry = {
-      id: generateId('loan'),
+      id: newLoanId,
       personName: data.personName.trim(),
       loanType: data.loanType,
+      direction: resolvedDirection,
+      entryKind: resolvedEntryKind,
+      reason: data.reason?.trim() || undefined,
+      categoryId: data.categoryId || resolvedCat?.id,
+      categoryName: data.categoryName || resolvedCat?.name || data.loanType,
       originalAmount: Number(data.originalAmount),
       settledAmount: 0,
       date: data.date || getTodayDateString(),
       dueDate: data.dueDate,
-      notes: data.notes?.trim(),
+      notes: data.notes?.trim() || undefined,
       status: 'Pending',
-      paymentMethod: data.paymentMethod,
-      bankAccountId: data.bankAccountId,
+      paymentMethod: resolvedPaymentMethod,
+      bankAccountId: resolvedPaymentMethod === 'Bank Account' || resolvedPaymentMethod === 'UPI' ? data.bankAccountId : undefined,
+      linkedTransactionId: txnId,
       repayments: [],
       createdAt: new Date().toISOString(),
     };
 
+    let disbursementTxn: Transaction | null = null;
+    if (shouldAffectCashOrBank && txnId) {
+      const isReceivable = resolvedDirection === 'Receivable';
+      disbursementTxn = {
+        id: txnId,
+        date: newLoan.date,
+        type: isReceivable ? 'Loan Given' : 'Loan Taken',
+        title: isReceivable
+          ? `${newLoan.reason ? `${newLoan.reason} · ` : ''}Given to ${newLoan.personName}`
+          : `${newLoan.reason ? `${newLoan.reason} · ` : ''}Borrowed from ${newLoan.personName}`,
+        narration: newLoan.reason || newLoan.notes,
+        categoryId: newLoan.categoryId,
+        categoryName: newLoan.categoryName,
+        amount: newLoan.originalAmount,
+        paymentMethod: resolvedPaymentMethod,
+        bankAccountId: resolvedPaymentMethod === 'Bank Account' || resolvedPaymentMethod === 'UPI' ? data.bankAccountId : undefined,
+        bankAccountName: bank?.bankName,
+        personName: newLoan.personName,
+        loanId: newLoan.id,
+        loanDirection: resolvedDirection,
+        notes: newLoan.notes,
+        createdAt: new Date().toISOString(),
+      };
+    }
+
     setLoans((prev) => [newLoan, ...prev]);
-    persistDoc('loans', newLoan.id, newLoan);
+    if (disbursementTxn) {
+      setTransactions((prev) => [disbursementTxn!, ...prev]);
+    }
 
-    // Also record transaction for disbursement so cash/bank reflects it immediately
-    const bank = bankAccounts.find((b) => b.id === data.bankAccountId);
-    const isMoneyGiven = data.loanType === 'Money Given' || data.loanType === 'Loan & Advance';
+    if (isAuthorized && currentUser?.uid) {
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'users', currentUser.uid, 'loans', newLoan.id), sanitizeForFirestore(newLoan));
+      if (disbursementTxn) {
+        batch.set(
+          doc(db, 'users', currentUser.uid, 'transactions', disbursementTxn.id),
+          sanitizeForFirestore(disbursementTxn)
+        );
+      }
+      batch.commit().catch((err) =>
+        handleFirestoreError(err, OperationType.CREATE, `users/${currentUser.uid}/loans/${newLoan.id}`)
+      );
+    }
 
-    const disbursementTxn: Transaction = {
-      id: generateId('loantxn'),
-      date: data.date || getTodayDateString(),
-      type: isMoneyGiven ? 'Loan Given' : 'Loan Taken',
-      title: isMoneyGiven ? `Loan given to ${data.personName}` : `Loan taken from ${data.personName}`,
-      amount: Number(data.originalAmount),
-      paymentMethod: data.paymentMethod || 'Cash',
-      bankAccountId: data.paymentMethod === 'Bank Account' || data.paymentMethod === 'UPI' ? data.bankAccountId : undefined,
-      bankAccountName: bank?.bankName,
-      personName: data.personName,
-      loanId: newLoan.id,
-      notes: data.notes?.trim(),
-      createdAt: new Date().toISOString(),
-    };
-
-    setTransactions((prev) => [disbursementTxn, ...prev]);
-    persistDoc('transactions', disbursementTxn.id, disbursementTxn);
-    showSuccessFeedback('Successfully Created', `Loan entry for ${newLoan.personName} saved`);
+    showSuccessFeedback(
+      'Successfully Created',
+      shouldAffectCashOrBank
+        ? `${resolvedDirection === 'Receivable' ? 'Money given' : 'Loan'} record for ${newLoan.personName} saved`
+        : `Payable/adjustment record for ${newLoan.personName} saved (Cash & Bank unchanged)`
+    );
     return newLoan;
   };
 
   const updateLoan = (id: string, updates: Partial<LoanEntry>) => {
+    let nextLoanForDb: Partial<LoanEntry> = { ...updates };
     setLoans((prev) =>
       prev.map((l) => {
         if (l.id !== id) return l;
@@ -1629,18 +2033,163 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
         } else if (settled > 0) {
           status = 'Partially Settled';
         }
+        nextLoanForDb = { ...updates, status };
         return { ...updated, status };
       })
     );
-    persistDoc('loans', id, updates, true);
+    persistDoc('loans', id, nextLoanForDb, true);
     showSuccessFeedback('Successfully Updated', 'Loan record updated');
   };
 
   const deleteLoan = (id: string) => {
+    const linkedTxIds = transactions.filter((t) => t.loanId === id).map((t) => t.id);
     setLoans((prev) => prev.filter((l) => l.id !== id));
-    deleteFirestoreDoc('loans', id);
-    // Also remove linked transactions
     setTransactions((prev) => prev.filter((t) => t.loanId !== id));
+
+    if (isAuthorized && currentUser?.uid) {
+      const batch = writeBatch(db);
+      batch.delete(doc(db, 'users', currentUser.uid, 'loans', id));
+      linkedTxIds.forEach((txId) => {
+        batch.delete(doc(db, 'users', currentUser.uid, 'transactions', txId));
+      });
+      batch.commit().catch((err) =>
+        handleFirestoreError(err, OperationType.DELETE, `users/${currentUser.uid}/loans/${id}`)
+      );
+    }
+  };
+
+  // Requirement 6 & 7: Direct Repayment Through Bank or Cash & Person-Wise Money Received (atomic FIFO allocation + single Cash/Bank entry)
+  const recordPersonSettlement = (data: {
+    personName: string;
+    direction: LoanDirection;
+    amount: number;
+    paymentMethod: PaymentMethod;
+    bankAccountId?: string;
+    date?: string;
+    notes?: string;
+    loanId?: string;
+  }) => {
+    const repAmount = Number(data.amount);
+    if (isNaN(repAmount) || repAmount <= 0) return;
+
+    const normPerson = data.personName.trim().toLowerCase();
+    const txnDate = data.date || getTodayDateString();
+    const bank = bankAccounts.find((b) => b.id === data.bankAccountId);
+
+    // Pick target pending loans matching person & direction, ordered FIFO (or targeted loanId first)
+    const matchingPending = loans
+      .filter((l) => {
+        const matchesDir = getLoanDirection(l) === data.direction;
+        const matchesPerson = l.personName.trim().toLowerCase() === normPerson;
+        const pending = Math.max(0, l.originalAmount - (l.settledAmount || 0));
+        if (data.loanId) {
+          return l.id === data.loanId && pending > 0.001;
+        }
+        return matchesDir && matchesPerson && pending > 0.001;
+      })
+      .sort((a, b) => a.date.localeCompare(b.date) || (a.createdAt || '').localeCompare(b.createdAt || ''));
+
+    if (matchingPending.length === 0) return;
+
+    const repTxnId = generateId('loanrep');
+    const isReceivable = data.direction === 'Receivable';
+    const canonicalPersonName = matchingPending[0].personName;
+    const primaryCat = matchingPending[0].categoryName || matchingPending[0].loanType;
+
+    let remainingToAllocate = repAmount;
+    const updatedLoansMap = new Map<string, LoanEntry>();
+
+    matchingPending.forEach((loan) => {
+      if (remainingToAllocate <= 0.0001) return;
+      const pending = Math.max(0, loan.originalAmount - (loan.settledAmount || 0));
+      const allocate = Math.min(pending, remainingToAllocate);
+      if (allocate <= 0) return;
+
+      remainingToAllocate = Math.max(0, remainingToAllocate - allocate);
+      const newSettled = (loan.settledAmount || 0) + allocate;
+      let newStatus: LoanEntry['status'] = 'Pending';
+      if (newSettled >= loan.originalAmount - 0.001) {
+        newStatus = 'Settled';
+      } else if (newSettled > 0) {
+        newStatus = 'Partially Settled';
+      }
+
+      const repRecord = {
+        id: generateId('rep'),
+        date: txnDate,
+        amount: allocate,
+        paymentMethod: data.paymentMethod,
+        bankAccountId: data.paymentMethod === 'Bank Account' || data.paymentMethod === 'UPI' ? data.bankAccountId : undefined,
+        bankAccountName: bank?.bankName,
+        linkedTransactionId: repTxnId,
+        repaymentType: isReceivable ? ('Received' as const) : ('Paid' as const),
+        notes: data.notes?.trim() || undefined,
+      };
+
+      updatedLoansMap.set(loan.id, {
+        ...loan,
+        settledAmount: newSettled,
+        status: newStatus,
+        repayments: [...(loan.repayments || []), repRecord],
+      });
+    });
+
+    const totalApplied = repAmount - remainingToAllocate;
+    const actualAmount = totalApplied > 0 ? totalApplied : repAmount;
+
+    const repTxn: Transaction = {
+      id: repTxnId,
+      date: txnDate,
+      type: 'Loan Repayment',
+      loanDirection: data.direction,
+      title: isReceivable
+        ? `Money Received from ${canonicalPersonName}`
+        : `Repayment Paid to ${canonicalPersonName}`,
+      narration: data.notes?.trim() || (isReceivable ? `Settlement received (${primaryCat})` : `Payable repayment (${primaryCat})`),
+      categoryId: matchingPending[0].categoryId,
+      categoryName: primaryCat || 'Loan Settlement',
+      amount: actualAmount,
+      paymentMethod: data.paymentMethod,
+      bankAccountId: data.paymentMethod === 'Bank Account' || data.paymentMethod === 'UPI' ? data.bankAccountId : undefined,
+      bankAccountName: bank?.bankName,
+      personName: canonicalPersonName,
+      loanId: data.loanId || matchingPending[0].id,
+      notes: data.notes?.trim() || undefined,
+      createdAt: new Date().toISOString(),
+    };
+
+    setLoans((prev) => prev.map((l) => updatedLoansMap.get(l.id) || l));
+    if (data.paymentMethod !== 'Adjustment') {
+      setTransactions((prev) => [repTxn, ...prev]);
+    }
+
+    if (isAuthorized && currentUser?.uid) {
+      const batch = writeBatch(db);
+      updatedLoansMap.forEach((updatedLoan, id) => {
+        batch.set(
+          doc(db, 'users', currentUser.uid, 'loans', id),
+          sanitizeForFirestore({
+            settledAmount: updatedLoan.settledAmount,
+            status: updatedLoan.status,
+            repayments: updatedLoan.repayments,
+          }),
+          { merge: true }
+        );
+      });
+      if (data.paymentMethod !== 'Adjustment') {
+        batch.set(doc(db, 'users', currentUser.uid, 'transactions', repTxn.id), sanitizeForFirestore(repTxn));
+      }
+      batch.commit().catch((err) =>
+        handleFirestoreError(err, OperationType.UPDATE, `users/${currentUser.uid}/loans/${matchingPending[0].id}`)
+      );
+    }
+
+    showSuccessFeedback(
+      'Successfully Saved',
+      isReceivable
+        ? `Received ${formatCurrency(actualAmount)} from ${canonicalPersonName}`
+        : `Repaid ${formatCurrency(actualAmount)} to ${canonicalPersonName}`
+    );
   };
 
   const recordLoanRepayment = (
@@ -1654,63 +2203,16 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     const loan = loans.find((l) => l.id === loanId);
     if (!loan) return;
 
-    const repAmount = Number(amount);
-    const newSettled = (loan.settledAmount || 0) + repAmount;
-    let newStatus: LoanEntry['status'] = 'Pending';
-    if (newSettled >= loan.originalAmount) {
-      newStatus = 'Settled';
-    } else if (newSettled > 0) {
-      newStatus = 'Partially Settled';
-    }
-
-    const newRep: LoanEntry['repayments'] = [
-      ...(loan.repayments || []),
-      {
-        id: generateId('rep'),
-        date: date || getTodayDateString(),
-        amount: repAmount,
-        paymentMethod,
-        bankAccountId,
-        notes,
-      },
-    ];
-
-    setLoans((prev) =>
-      prev.map((l) =>
-        l.id === loanId
-          ? {
-              ...l,
-              settledAmount: newSettled,
-              status: newStatus,
-              repayments: newRep,
-            }
-          : l
-      )
-    );
-    persistDoc('loans', loanId, { settledAmount: newSettled, status: newStatus, repayments: newRep }, true);
-
-    // Record repayment transaction
-    const bank = bankAccounts.find((b) => b.id === bankAccountId);
-    const isMoneyGiven = loan.loanType === 'Money Given' || loan.loanType === 'Loan & Advance';
-
-    const repTxn: Transaction = {
-      id: generateId('loanrep'),
-      date: date || getTodayDateString(),
-      type: isMoneyGiven ? 'Money Received' : 'Money Paid',
-      title: isMoneyGiven ? `Loan Repayment received from ${loan.personName}` : `Loan Repayment paid to ${loan.personName}`,
-      amount: repAmount,
-      paymentMethod,
-      bankAccountId: paymentMethod === 'Bank Account' || paymentMethod === 'UPI' ? bankAccountId : undefined,
-      bankAccountName: bank?.bankName,
+    recordPersonSettlement({
       personName: loan.personName,
-      loanId: loan.id,
-      notes: notes?.trim(),
-      createdAt: new Date().toISOString(),
-    };
-
-    setTransactions((prev) => [repTxn, ...prev]);
-    persistDoc('transactions', repTxn.id, repTxn);
-    showSuccessFeedback('Successfully Saved', `Repayment of ${formatCurrency(repAmount)} recorded`);
+      direction: getLoanDirection(loan),
+      amount,
+      paymentMethod,
+      bankAccountId,
+      date,
+      notes,
+      loanId,
+    });
   };
 
   const addUpiAccount = (data: Omit<UpiAccount, 'id' | 'createdAt'>): UpiAccount => {
@@ -1759,21 +2261,22 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
 
   const confirmDelete = () => {
     setDeleteModalState((prev) => ({ ...prev, isDeleting: true }));
+  };
 
-    // Requirement 18: "Loading duration should feel approximately 3–4 seconds"
-    setTimeout(() => {
-      deleteModalState.onConfirm();
-      setDeleteModalState({
-        isOpen: false,
-        itemType: '',
-        itemId: '',
-        itemTitle: '',
-        isDeleting: false,
-        onConfirm: () => {},
-      });
-      // Requirement 18: "After deletion, show a success confirmation such as: Successfully Deleted"
-      showSuccessFeedback('Successfully Deleted', 'Item has been removed');
-    }, 3200);
+  const completeDelete = () => {
+    const action = deleteModalState.onConfirm;
+    setDeleteModalState({
+      isOpen: false,
+      itemType: '',
+      itemId: '',
+      itemTitle: '',
+      isDeleting: false,
+      onConfirm: () => {},
+    });
+    if (typeof action === 'function') {
+      action();
+    }
+    showSuccessFeedback('Successfully Deleted', 'Item has been removed');
   };
 
   const cancelDelete = () => {
@@ -1951,6 +2454,9 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
         updateLoan,
         deleteLoan,
         recordLoanRepayment,
+        recordPersonSettlement,
+
+        recordAtmWithdrawal,
 
         addUpiAccount,
         updateUpiAccount,
@@ -1961,6 +2467,7 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
         deleteModalState,
         requestDelete,
         confirmDelete,
+        completeDelete,
         cancelDelete,
 
         successFeedback,

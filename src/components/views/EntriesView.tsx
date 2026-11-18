@@ -12,6 +12,7 @@ import {
   Trash2,
   Landmark,
   FileText,
+  Paperclip,
 } from 'lucide-react';
 import { useFinancial } from '../../context/FinancialContext';
 import { formatCurrency, formatDate } from '../../utils/formatters';
@@ -104,22 +105,30 @@ export const EntriesView: React.FC = () => {
 
           {/* Type Segmented Controls */}
           <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl overflow-x-auto text-xs">
-            {(['ALL', 'Expense', 'Money Received', 'Money Paid', 'Credit Card Payment'] as const).map(
-              (t) => (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => setTypeFilter(t)}
-                  className={`px-3 py-1.5 rounded-lg font-medium whitespace-nowrap transition-colors cursor-pointer ${
-                    typeFilter === t
-                      ? 'bg-white text-slate-900 shadow-xs font-semibold'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  {t === 'ALL' ? 'All Types' : t}
-                </button>
-              )
-            )}
+            {(
+              [
+                'ALL',
+                'Expense',
+                'Money Received',
+                'Money Paid',
+                'ATM Withdrawal',
+                'Loan Repayment',
+                'Credit Card Payment',
+              ] as const
+            ).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setTypeFilter(t)}
+                className={`px-3 py-1.5 rounded-lg font-medium whitespace-nowrap transition-colors cursor-pointer ${
+                  typeFilter === t
+                    ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                {t === 'ALL' ? 'All Types' : t}
+              </button>
+            ))}
           </div>
 
           {/* Payment Method Filter - Modern Inline Dropdown */}
@@ -134,6 +143,7 @@ export const EntriesView: React.FC = () => {
                 { value: 'UPI', label: 'UPI' },
                 { value: 'Bank Account', label: 'Bank Account' },
                 { value: 'Credit Card', label: 'Credit Card' },
+                { value: 'Adjustment', label: 'Adjustment' },
               ]}
               searchable={false}
               placeholder="All Sources"
@@ -174,7 +184,9 @@ export const EntriesView: React.FC = () => {
                     txn.type === 'Expense' ||
                     txn.type === 'Money Paid' ||
                     txn.type === 'Loan Given' ||
-                    txn.type === 'Credit Card Payment';
+                    txn.type === 'Credit Card Payment' ||
+                    (txn.type === 'Loan Repayment' && txn.loanDirection === 'Payable') ||
+                    (txn.type === 'ATM Withdrawal' && txn.transferDirection !== 'in');
 
                   return (
                     <tr
@@ -202,8 +214,19 @@ export const EntriesView: React.FC = () => {
 
                       {/* Name / Title */}
                       <td className="py-3.5 px-4">
-                        <div className="font-semibold text-slate-900 truncate max-w-xs">
-                          {txn.title}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-semibold text-slate-900 truncate max-w-xs">
+                            {txn.title}
+                          </span>
+                          {txn.attachments && txn.attachments.length > 0 && (
+                            <span
+                              className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded-md shrink-0"
+                              title={`${txn.attachments.length} attachment(s)`}
+                            >
+                              <Paperclip className="w-2.5 h-2.5" />
+                              {txn.attachments.length}
+                            </span>
+                          )}
                         </div>
                         {txn.personName && (
                           <div className="text-[11px] text-slate-400 mt-0.5 truncate">

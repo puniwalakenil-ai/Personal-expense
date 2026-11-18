@@ -2,12 +2,17 @@ import React, { createContext, useContext, useEffect, useState, ReactNode } from
 import {
   User,
   onAuthStateChanged,
-  signInWithPopup,
   signOut as fbSignOut,
-  setPersistence,
-  browserLocalPersistence,
 } from 'firebase/auth';
-import { auth, googleProvider, AUTHORIZED_EMAIL, isUserAuthorized, testConnection } from '../lib/firebase';
+import {
+  auth,
+  googleProvider,
+  AUTHORIZED_EMAIL,
+  isUserAuthorized,
+  testConnection,
+  signInWithPopup,
+  browserPopupRedirectResolver,
+} from '../lib/firebase';
 
 const SESSION_STORAGE_FLAG = 'tech_expenses_user_authenticated';
 
@@ -35,11 +40,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     // Run connection test on boot
     testConnection().catch((err) => {
       console.warn('Initial connection probe:', err);
-    });
-
-    // Explicitly configure browserLocalPersistence to keep session active across tab closes, browser restarts, and refreshes
-    setPersistence(auth, browserLocalPersistence).catch((err) => {
-      console.warn('Set persistence failed:', err);
     });
 
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -72,11 +72,19 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const signInWithGoogle = async () => {
     setLoginError(null);
+
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      setLoginError(
+        'You appear to be offline. Please check your internet connection and try signing in with Google again.'
+      );
+      return;
+    }
+
     setIsSigningIn(true);
     try {
       // NOTE: Call signInWithPopup directly without any preceding await
       // to preserve the synchronous user gesture tick required by browsers for window.open
-      const result = await signInWithPopup(auth, googleProvider);
+      const result = await signInWithPopup(auth, googleProvider, browserPopupRedirectResolver);
       const user = result.user;
       if (!isUserAuthorized(user)) {
         setLoginError(
@@ -95,24 +103,38 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         } catch {}
       }
     } catch (err: unknown) {
-      console.error('Google Sign-In Error:', err);
-      if (err && typeof err === 'object') {
-        const error = err as { code?: string; message?: string };
-        const code = error.code || '';
-        const msg = error.message || '';
-        if (code === 'auth/popup-blocked' || msg.includes('popup-blocked')) {
-          setLoginError('Popup was blocked by your browser. Please allow popups for this site in your browser URL bar or settings, then click Sign in with Google again.');
-        } else if (code === 'auth/popup-closed-by-user' || msg.includes('popup-closed-by-user')) {
-          setLoginError('Sign-in prompt was closed. Please click Sign in with Google to continue.');
-        } else if (code === 'auth/cancelled-popup-request' || msg.includes('cancelled-popup-request')) {
-          setLoginError('A sign-in window is already open. Please switch to the open window.');
-        } else if (code === 'auth/unauthorized-domain' || msg.includes('unauthorized-domain')) {
-          setLoginError('This domain is not authorized in Firebase Auth settings. Please verify authorized domains.');
-        } else {
-          setLoginError(msg || 'An unknown error occurred during sign-in.');
-        }
+      const error = err && typeof err === 'object' ? (err as { code?: string; message?: string }) : {};
+      const code = error.code || '';
+      const msg = error.message || '';
+
+      console.warn('Google Sign-In failed:', code || msg || err);
+
+      if (code === 'auth/network-request-failed' || msg.includes('network-request-failed')) {
+        setLoginError(
+          'Unable to reach Google authentication servers. Check your internet/VPN connection, or disable strict tracking/ad blockers for this page and try again.'
+        );
+      } else if (code === 'auth/popup-blocked' || msg.includes('popup-blocked')) {
+        setLoginError(
+          'Popup was blocked by your browser. Please allow popups for this site in your browser URL bar or settings, then click Sign in with Google again.'
+        );
+      } else if (code === 'auth/popup-closed-by-user' || msg.includes('popup-closed-by-user')) {
+        setLoginError('Sign-in prompt was closed. Please click Sign in with Google to continue.');
+      } else if (code === 'auth/cancelled-popup-request' || msg.includes('cancelled-popup-request')) {
+        setLoginError('A sign-in window is already open. Please switch to the open window.');
+      } else if (code === 'auth/unauthorized-domain' || msg.includes('unauthorized-domain')) {
+        setLoginError('This domain is not authorized in Firebase Auth settings. Please verify authorized domains.');
+      } else if (code === 'auth/web-storage-unsupported' || msg.includes('web-storage-unsupported')) {
+        setLoginError(
+          'Browser storage or third-party cookies are disabled. Enable cookies/site data for this app and try again.'
+        );
+      } else if (code === 'auth/too-many-requests' || msg.includes('too-many-requests')) {
+        setLoginError('Too many sign-in attempts in a short time. Please wait a moment and try again.');
+      } else if (code === 'auth/internal-error' || msg.includes('internal-error')) {
+        setLoginError(
+          'Google Sign-In encountered a temporary connection error. Please refresh or retry in a moment.'
+        );
       } else {
-        setLoginError('An unknown error occurred during sign-in.');
+        setLoginError(msg || 'An unknown error occurred during sign-in. Please try again.');
       }
     } finally {
       setIsSigningIn(false);

@@ -17,6 +17,7 @@ import {
   FileText,
   History,
   Clock,
+  Paperclip,
 } from 'lucide-react';
 import { useFinancial } from '../../context/FinancialContext';
 import { PageView } from '../../types';
@@ -497,11 +498,22 @@ export const CreditCardDetailView: React.FC<Props> = ({ cardId, returnTo }) => {
                         <div className="font-bold text-slate-900 group-hover:text-purple-600 transition-colors">
                           {row.title}
                         </div>
-                        {row.categoryName && (
-                          <span className="text-[10px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-md mt-0.5 inline-block">
-                            {row.categoryName}
-                          </span>
-                        )}
+                        <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                          {row.categoryName && (
+                            <span className="text-[10px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-md inline-block">
+                              {row.categoryName}
+                            </span>
+                          )}
+                          {row.attachments && row.attachments.length > 0 && (
+                            <span
+                              className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded-md"
+                              title={`${row.attachments.length} attachment(s)`}
+                            >
+                              <Paperclip className="w-2.5 h-2.5" />
+                              {row.attachments.length}
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       {/* Narration */}
@@ -582,7 +594,7 @@ export const CreditCardDetailView: React.FC<Props> = ({ cardId, returnTo }) => {
                       <div className="text-xs font-bold text-slate-900 truncate">
                         {row.title}
                       </div>
-                      <div className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-1.5">
+                      <div className="text-[11px] text-slate-400 mt-0.5 flex flex-wrap items-center gap-1.5">
                         <Calendar className="w-3 h-3 text-slate-400 inline" />
                         <span>{formatDate(row.date)}</span>
                         {row.categoryName && (
@@ -590,6 +602,12 @@ export const CreditCardDetailView: React.FC<Props> = ({ cardId, returnTo }) => {
                             <span>·</span>
                             <span>{row.categoryName}</span>
                           </>
+                        )}
+                        {row.attachments && row.attachments.length > 0 && (
+                          <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded-md">
+                            <Paperclip className="w-2.5 h-2.5" />
+                            {row.attachments.length}
+                          </span>
                         )}
                       </div>
                     </div>

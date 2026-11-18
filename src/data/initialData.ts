@@ -39,4 +39,6 @@ export const defaultPersonalCategories: Omit<Category, 'id' | 'createdAt'>[] = [
   { name: 'Freelance & Business', type: 'Income' },
   { name: 'Investments & Returns', type: 'Income' },
   { name: 'Gifts & Cashback', type: 'Income' },
+  { name: 'Loan & Advance', type: 'Loan' },
+  { name: 'Unsecured Loan', type: 'Advance' },
 ];
